@@ -1,0 +1,259 @@
+---
+title: "IGHM expression is upregulated in B cells from B-high tumor or B-high PBMC samples"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Differential gene expression analysis in B cells from B-high tumor or B-high PBMC samples in Cohort7 and Cohort8
+
+
+```{r, include=FALSE}
+# load required package
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+library(openxlsx)
+library(UCell)
+library(readxl)
+
+library(tidyverse) 
+library(RColorBrewer) 
+library(ggrepel)
+
+```
+
+
+# set parameters and constants
+```{r}
+
+volcanoPlot_FC_cutoff = 0.25
+logFC_filter = 0 
+Pval_filter = 0.05 
+minPct_filter = 0.25 
+Bhigh_percentile = 0.8
+Blow_percentile = 0.5
+p_val_adj_cutoff = 0.05
+
+fig_dir = paste0("../03.Results/Figures/")
+
+```
+
+# Find and plot DEGs in B-high vs B-low B cells (GSE200996 Tissue)
+```{r}
+
+merged_seu_GSE200996_Tissue = readRDS(file = paste0("../02.Input/GSE200996/seu_Tissue.rds"))
+
+# identify B-rich and B-poor samples
+ICF_df = read.csv(file = paste0("../02.Input/GSE200996/GSE200996_Tissue_CellProportions_L2.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+B_rich_samples = ICF_df$sample[ICF_df$B > quantile(ICF_df$B, Bhigh_percentile)]
+B_poor_samples = ICF_df$sample[ICF_df$B < quantile(ICF_df$B, Blow_percentile)]
+
+subset_seu_GSE200996_Tissue = subset(merged_seu_GSE200996_Tissue, subset = patient %in% c(B_rich_samples,B_poor_samples))
+subset_seu_GSE200996_Tissue$B_rich = 1
+subset_seu_GSE200996_Tissue$B_rich[subset_seu_GSE200996_Tissue$patient %in% B_poor_samples] = 0
+
+# find marker genes 
+unique(subset_seu_GSE200996_Tissue$cell_type_L2)
+subset_seu_GSE200996_Tissue_B = subset(subset_seu_GSE200996_Tissue, subset = cell_type_L2 == "B")
+Idents(object = subset_seu_GSE200996_Tissue_B) <- subset_seu_GSE200996_Tissue_B@meta.data$B_rich
+Cells.markers_GSE200996_Tissue <- FindMarkers(subset_seu_GSE200996_Tissue_B, ident.1 = 1, ident.2 = 0, group.by = "B_rich",
+                         min.pct = minPct_filter, logfc.threshold = logFC_filter)
+
+
+```
+
+# Figure S9A. Find and plot DEGs in B-high vs B-low B cells (GSE200996 PBMC)
+```{r}
+
+merged_seu_GSE200996_PBMC = readRDS(file = paste0("../02.Input/GSE200996/seu_PBMC.rds"))
+
+# identify B-rich and B-poor samples
+ICF_df = read.csv(file = paste0("../02.Input/GSE200996/GSE200996_PBMC_CellProportions_L2.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+B_rich_samples = ICF_df$sample[ICF_df$B > quantile(ICF_df$B, Bhigh_percentile)]
+B_poor_samples = ICF_df$sample[ICF_df$B < quantile(ICF_df$B, Blow_percentile)]
+
+subset_seu_GSE200996_PBMC = subset(merged_seu_GSE200996_PBMC, subset = patient %in% c(B_rich_samples,B_poor_samples))
+subset_seu_GSE200996_PBMC$B_rich = 1
+subset_seu_GSE200996_PBMC$B_rich[subset_seu_GSE200996_PBMC$patient %in% B_poor_samples] = 0
+
+
+# find marker genes 
+unique(subset_seu_GSE200996_PBMC$cell_type_L2)
+subset_seu_GSE200996_PBMC_B = subset(subset_seu_GSE200996_PBMC, subset = cell_type_L2 == "B")
+Idents(object = subset_seu_GSE200996_PBMC_B) <- subset_seu_GSE200996_PBMC_B@meta.data$B_rich
+Cells.markers_GSE200996_PBMC <- FindMarkers(subset_seu_GSE200996_PBMC_B, ident.1 = 1, ident.2 = 0, group.by = "B_rich",
+                         min.pct = minPct_filter, logfc.threshold = logFC_filter)
+
+print(Cells.markers_GSE200996_PBMC["IGHM",])
+max(Cells.markers_GSE200996_PBMC$avg_log2FC)
+min(Cells.markers_GSE200996_PBMC$avg_log2FC)
+
+####### Create the volcano plot
+x_max = 0.8
+y_max = 100
+de_df <- as.data.frame(Cells.markers_GSE200996_PBMC)
+de_df$gene_symbol = rownames(de_df)
+de_df$diffexpressed = "ns"
+de_df$diffexpressed[(de_df$avg_log2FC < -volcanoPlot_FC_cutoff) & (de_df$p_val_adj < p_val_adj_cutoff)] = "down"
+de_df$diffexpressed[(de_df$avg_log2FC > volcanoPlot_FC_cutoff) & (de_df$p_val_adj < p_val_adj_cutoff)] = "up"
+de_df_sig = de_df[de_df$diffexpressed != "ns",]
+top_up_genes = head(de_df_sig[order(-de_df_sig$avg_log2FC), "gene_symbol"], 12)
+top_down_genes = head(de_df_sig[order(de_df_sig$avg_log2FC), "gene_symbol"], 8)
+
+label_genes = union(top_up_genes,top_down_genes)
+de_df$delabel <- ifelse(de_df$gene_symbol %in% label_genes, de_df$gene_symbol, NA)
+
+myvolcanoplot <- ggplot(data = de_df, aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) +
+  geom_vline(xintercept = c(-volcanoPlot_FC_cutoff, volcanoPlot_FC_cutoff), col = "gray", linetype = 'dashed') +
+  geom_hline(yintercept = -log10(p_val_adj_cutoff), col = "gray", linetype = 'dashed') + 
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("#00AFBB", "grey", "#bb0c00"), 
+                     labels = c("", "", "")) +
+  coord_cartesian(ylim = c(0.1, y_max), xlim = c(-0.8, x_max)) + 
+  labs(color = 'FC', 
+       x = expression("log"[2]*"FC"), y = expression("-log"[10]*"p-value")) + 
+  scale_x_continuous(breaks = seq(-0.8, x_max, x_max/2)) + 
+  scale_y_log10() + 
+  ggtitle('') + 
+  guides(col = FALSE) + 
+  geom_text_repel(max.overlaps = Inf) + 
+  theme_set(theme_classic(base_size = 20) +
+              theme(
+                axis.title.y = element_text(face = "bold", margin = margin(0,20,0,0), size = rel(1.1), color = 'black'),
+                axis.title.x = element_text(hjust = 0.5, face = "bold", margin = margin(20,0,0,0), size = rel(1.1), color = 'black'),
+                plot.title = element_text(hjust = 0.5),
+                legend.position = "none"
+              ))
+
+pdf(file = paste0(fig_dir, "Volcano_plot_Brich_vs_Bpoor_GSE200996_PBMC.pdf"), width = 4.5, height = 4.5) 
+myvolcanoplot
+dev.off()
+
+
+
+```
+
+
+
+# Find and plot DEGs in B-high vs B-low B cells (GSE139324 PBMC)
+```{r}
+
+merged_seu_GSE139324_PBMC = readRDS(file = paste0("../02.Input/GSE139324/seu_PBMC.rds"))
+
+# identify B-rich and B-poor samples
+ICF_df = read.csv(file = paste0("../02.Input/GSE139324/PBMC_CellProportions_L2.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+B_rich_samples = ICF_df$sample[ICF_df$B > quantile(ICF_df$B, Bhigh_percentile)]
+B_poor_samples = ICF_df$sample[ICF_df$B < quantile(ICF_df$B, Blow_percentile)]
+
+subset_seu_GSE139324_PBMC = subset(merged_seu_GSE139324_PBMC, subset = meta %in% c(B_rich_samples,B_poor_samples))
+subset_seu_GSE139324_PBMC$B_rich = 1
+subset_seu_GSE139324_PBMC$B_rich[subset_seu_GSE139324_PBMC$meta %in% B_poor_samples] = 0
+
+
+# find marker genes 
+subset_seu_GSE139324_PBMC_B = subset(subset_seu_GSE139324_PBMC, subset = cell_type_L2 == "B") # T_NK
+Idents(object = subset_seu_GSE139324_PBMC_B) <- subset_seu_GSE139324_PBMC_B@meta.data$B_rich
+Cells.markers_GSE139324_PBMC <- FindMarkers(subset_seu_GSE139324_PBMC_B, ident.1 = 1, ident.2 = 0, group.by = "B_rich",
+                         min.pct = minPct_filter, logfc.threshold = logFC_filter)
+
+print(Cells.markers_GSE139324_PBMC["IGHM",])
+
+
+```
+
+# Find and plot DEGs in B-high vs B-low B cells (GSE139324 Tissue)
+```{r}
+
+merged_seu_GSE139324_Tissue = readRDS(file = paste0("../02.Input/GSE139324/seu_Tissue.rds"))
+
+# identify B-rich and B-poor samples
+ICF_df = read.csv(file = paste0("../02.Input/GSE139324/Tissue_CellProportions_L2.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+B_rich_samples = ICF_df$sample[ICF_df$B > quantile(ICF_df$B, Bhigh_percentile)]
+B_poor_samples = ICF_df$sample[ICF_df$B < quantile(ICF_df$B, Blow_percentile)]
+
+subset_seu_GSE139324_Tissue = subset(merged_seu_GSE139324_Tissue, subset = meta %in% c(B_rich_samples,B_poor_samples))
+subset_seu_GSE139324_Tissue$B_rich = 1
+subset_seu_GSE139324_Tissue$B_rich[subset_seu_GSE139324_Tissue$meta %in% B_poor_samples] = 0
+
+
+# find marker genes 
+subset_seu_GSE139324_Tissue_B = subset(subset_seu_GSE139324_Tissue, subset = cell_type_L2 == "B") # T_NK
+Idents(object = subset_seu_GSE139324_Tissue_B) <- subset_seu_GSE139324_Tissue_B@meta.data$B_rich
+Cells.markers_GSE139324_Tissue <- FindMarkers(subset_seu_GSE139324_Tissue_B, ident.1 = 1, ident.2 = 0, group.by = "B_rich",
+                         min.pct = minPct_filter, logfc.threshold = logFC_filter)
+
+```
+
+
+# Figure S9B. Make venn plot showing intersection of upregulated genes in B cells in GSE200996 and GSE139324
+```{r}
+
+library(VennDiagram)
+
+
+Cells.markers_GSE200996_PBMC$gene = rownames(Cells.markers_GSE200996_PBMC)
+GSE200996_PBMC_Brich_up_genes = Cells.markers_GSE200996_PBMC[(Cells.markers_GSE200996_PBMC$p_val_adj < p_val_adj_cutoff) & (Cells.markers_GSE200996_PBMC$avg_log2FC > 0), "gene"]
+
+Cells.markers_GSE200996_Tissue$gene = rownames(Cells.markers_GSE200996_Tissue)
+GSE200996_Tissue_Brich_up_genes = Cells.markers_GSE200996_Tissue[(Cells.markers_GSE200996_Tissue$p_val_adj < p_val_adj_cutoff) & (Cells.markers_GSE200996_Tissue$avg_log2FC > 0), "gene"]
+
+Cells.markers_GSE139324_PBMC$gene = rownames(Cells.markers_GSE139324_PBMC)
+GSE139324_PBMC_Brich_up_genes = Cells.markers_GSE139324_PBMC[(Cells.markers_GSE139324_PBMC$p_val_adj < p_val_adj_cutoff) & (Cells.markers_GSE139324_PBMC$avg_log2FC > 0), "gene"]
+
+Cells.markers_GSE139324_Tissue$gene = rownames(Cells.markers_GSE139324_Tissue)
+GSE139324_Tissue_Brich_up_genes = Cells.markers_GSE139324_Tissue[(Cells.markers_GSE139324_Tissue$p_val_adj < p_val_adj_cutoff) & (Cells.markers_GSE139324_Tissue$avg_log2FC > 0), "gene"]
+
+
+# Create a list of gene sets
+gene_sets <- list(Set1 = GSE200996_PBMC_Brich_up_genes, Set2 = GSE200996_Tissue_Brich_up_genes, Set3 = GSE139324_PBMC_Brich_up_genes, Set4 = GSE139324_Tissue_Brich_up_genes)
+
+# Draw the Venn diagram
+venn.plot <- venn.diagram(
+  x = gene_sets,
+  category.names = c("", "", "", ""),
+  output = TRUE,
+  filename = paste0(fig_dir, "Brich_up_genes_venn_diagram.png"),
+  imagetype = "png",
+  height = 800,
+  width = 800,
+  resolution = 300,
+  compression = "lzw",
+  lwd = 2,
+  col = "black",
+  fill = c("cornflowerblue", "green", "yellow", "darkorchid1"),
+  alpha = 0.50,
+  cex = 1.5,
+  fontfamily = "Arial",
+  cat.col = c("cornflowerblue", "green", "yellow", "darkorchid1"),
+  cat.cex = 1.5,
+  cat.fontfamily = "serif"
+)
+
+
+```
+
+

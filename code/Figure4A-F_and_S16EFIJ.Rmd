@@ -1,0 +1,570 @@
+---
+title: "B cell abundance predicts ICB response in newly generated independent cohorts"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+# Aims:
+
+- Validate the predictive power of B cell abundance in two in-house cohorts 
+
+
+# load required package
+```{r}
+
+library(survival)
+library(survminer)
+library(ggplot2)
+library(RColorBrewer)
+library(glmnet)
+library(rlang)
+library(pROC)
+library(verification)
+library(tibble)
+library(gridExtra)
+library(forestplot)
+
+library(readxl)
+library(openxlsx)
+
+library(purrr)
+library(readr)
+
+```
+
+# common functions and constants
+```{r}
+
+result_fig_dir = "../03.Results/Figures/"
+
+process_file <- function(file_path) {
+  sample_name <- gsub(".*result_(.*)\\.tsv", "\\1", basename(file_path))
+  df <- read_tsv(file_path, col_names = TRUE)
+  df <- df[, 1:2]  
+  colnames(df) <- c("Cell_Type", sample_name)
+  return(df)
+}
+
+```
+
+# load in-house 1 data (Cohort10)
+```{r}
+
+Morris_gene_expr_df = read.csv(file = "../02.Input/MSK/Morris.HNIO.Sample.hg19KnownGene.tpm.csv", header = T, row.names = 1)
+
+gene_symbols = mapIds(x = org.Hs.eg.db,
+                                  keys=rownames(Morris_gene_expr_df),
+                                  keytype="ENTREZID",
+                                  column="SYMBOL",
+                                  multiVals="first")
+
+Morris_gene_expr_df$geneSymbol = gene_symbols
+Morris_gene_expr_df$geneSymbol[is.na(Morris_gene_expr_df$geneSymbol)] = rownames(Morris_gene_expr_df)[is.na(Morris_gene_expr_df$geneSymbol)]
+
+Morris_gene_expr_df = Morris_gene_expr_df[!duplicated(Morris_gene_expr_df$geneSymbol),]
+rownames(Morris_gene_expr_df) = Morris_gene_expr_df$geneSymbol
+Morris_gene_expr_df$geneSymbol = NULL
+
+
+Morris_Kassandra_cellRatio_df = read.csv("../02.Input/MSK/Morris_Kassandra_deconvolution_result.csv", row.names = 1)
+
+############### clincal_info
+clincal_info_df = read.xlsx("../02.Input/MSK/HN_preIO_RNAseq_Clinical data for nci.xlsx", sheet = "HN_Illumina.Sample_Info")
+
+Morris_all_info = merge(Morris_Kassandra_cellRatio_df, clincal_info_df, by = "Sample")
+Morris_all_info$ICBR = 0
+Morris_all_info$ICBR[Morris_all_info$BEST_RESPONSE %in% c("CR", "PR")] = 1
+
+
+```
+
+# Figure 4A. plot tumor B ratio vs ICB response ROC and AUC (Cohort10)
+```{r}
+
+plot_data = Morris_all_info[c("B_cells", "ICBR")]
+colnames(plot_data) = c("Tumor_B_ratio", "RECIST_R")
+
+######  ROC and AUC for RECIST_R
+# Calculate the ROC curve
+roc_obj <- roc(plot_data$RECIST_R, plot_data$Tumor_B_ratio)
+# Calculate the AUC with the 95% CI
+AUC_ci <- ci.auc(roc_obj)
+AUC = AUC_ci[2]
+AUC_low = AUC_ci[1]
+AUC_up = AUC_ci[3]
+# Calculate the p-value for the AUC
+p_val = roc.area(plot_data$RECIST_R, plot_data$Tumor_B_ratio)$p.value
+label <- sprintf("AUC = %.2f\n(%.2f,%.2f)\np = %.3f", AUC,AUC_low,AUC_up, p_val)
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_Bratio_ICBR_Morris.pdf"))
+fig_width = 2.2
+fig_height = 2.2
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj$sensitivities, sensitivity=roc_obj$specificities), aes(x = 1 - specificity, y = sensitivity), color = "black", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = 0.45,
+    y = 0.2,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+```
+
+# Figure 4A. box plot of B abundance in R vs NR (Cohort10)
+```{r}
+
+all_info = plot_data
+colnames(all_info) = c("B cells", "ICB_R")
+
+pdf(file = paste0(result_fig_dir, "Box_Morris_Babundance_R_vs_NR.pdf"),height = 3*0.7, width = 2*0.7) 
+ggplot() +
+  geom_boxplot(data = all_info, aes(x = factor(ICB_R, level=c(0,1)), y = `B cells`, fill = factor(ICB_R, level=c(0,1))),outlier.shape = NA) +
+  geom_point(data = all_info, aes(x = ICB_R + 1 + runif(length(`B cells`), min = -0.2, max = 0.2), y = `B cells`)) +
+  labs(x = "", y = "B cell abundance (%)") +
+  scale_x_discrete(labels = c("NR", "R")) +  
+  scale_fill_manual(values = c("#00305d", "#9c1915")) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        legend.position = "none")
+dev.off()
+
+print(wilcox.test(all_info$`B cells`[all_info$ICB_R==1], all_info$`B cells`[all_info$ICB_R==0])) 
+
+```
+
+# Figure 4BC - Figure S16EF. K-M curves tumor B ratio vs OS / PFS (Cohort10)
+```{r}
+
+Bcell_high_vs_low_cutoff = 0.333 # 0.333, 0.5
+
+data_plot = Morris_all_info[c("B_cells","Progression_event_code","Overall_Survival_Event","Progression_free_survival.(Months)","Overall_Survival.(Months)")]
+colnames(data_plot) = c("Bratio", "PFS_event", "OS_event", "PFS_time", "OS_time")
+
+data_plot$B_score = "High"
+data_plot$B_score[data_plot$Bratio <= quantile (data_plot$Bratio, Bcell_high_vs_low_cutoff)] = "Low"
+data_plot$B_score <- relevel(factor(data_plot$B_score), ref = "Low")
+
+##### OS
+cancerData=data.frame(data_plot$B_score,data_plot$OS_time,data_plot$OS_event)
+cancerData = na.omit(cancerData)
+colnames(cancerData) = c("Score", "OS_Months", "OS_Event")
+sfit = survfit(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(OS_Months,OS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('OS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                 
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE,              
+
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="OS probability",
+  break.time.by = 10,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c("B-low", "B-high"),   
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+)
+
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_Morris_OS.pdf"),width=3.3*1, height=3*1)
+print(survp, newpage = FALSE)
+dev.off()
+
+
+
+
+
+##### PFS
+cancerData=data.frame(data_plot$B_score,data_plot$PFS_time,data_plot$PFS_event)
+cancerData = na.omit(cancerData)
+colnames(cancerData) = c("Score", "PFS_Months", "PFS_Event")
+sfit = survfit(Surv(PFS_Months,PFS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(PFS_Months,PFS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('PFS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                 
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE,              
+  
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="PFS probability",
+  break.time.by = 10,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c("B-low", "B-high"),   
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+)
+
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_Morris_PFS.pdf"),width=3.3, height=3)
+print(survp, newpage = FALSE)
+dev.off()
+
+```
+
+# load in-house 1 data (Cohort11)
+```{r}
+
+data_dir = "../02.Input/HNSCC-Amanda/"
+Psyrri_all_info <- read_excel(paste0(data_dir, "HNSCC ITx annotations all assays_v3_flow_arranged_20241004.xlsx"), sheet = "Sheet1")
+
+Psyrri_all_info$ICBR = 0
+Psyrri_all_info$ICBR[Psyrri_all_info$BOR %in% c("CR", "PR")] = 1 # , "MR" , "SD"
+Psyrri_all_info$B2ML = Psyrri_all_info$`Flow B Cells count`/(Psyrri_all_info$`Flow Monocytes Count`+Psyrri_all_info$`Flow Lymphocytes Count`)
+
+Psyrri_all_info$`OS status`[Psyrri_all_info$`OS status` == "ALIVE"] = 0
+Psyrri_all_info$`OS status`[Psyrri_all_info$`OS status` == "DEAD"] = 1
+Psyrri_all_info$`PFS status`[Psyrri_all_info$`PFS status` == "ALIVE"] = 0
+Psyrri_all_info$`PFS status`[Psyrri_all_info$`PFS status` == "DEAD"] = 1
+
+```
+
+# Figure 4D. plot PBMC B ratio vs ICB response ROC and AUC (Cohort11) 
+```{r}
+
+Predictor = "B2ML" 
+
+all_info = Psyrri_all_info
+plot_data = all_info[c(Predictor, "ICBR")] 
+colnames(plot_data) = c("PBMC_B_ratio", "RECIST_R")
+
+######  ROC and AUC for RECIST_R
+result_fig_dir = "../03.Results/Figures/"
+# Calculate the ROC curve
+roc_obj <- roc(plot_data$RECIST_R, plot_data$PBMC_B_ratio)
+# Calculate the AUC with the 95% CI
+AUC_ci <- ci.auc(roc_obj)
+AUC = AUC_ci[2]
+AUC_low = AUC_ci[1]
+AUC_up = AUC_ci[3]
+# Calculate the p-value for the AUC
+p_val = roc.area(plot_data$RECIST_R, plot_data$PBMC_B_ratio)$p.value
+label <- sprintf("AUC = %.2f\n(%.2f,%.2f)\np = %.3f", AUC,AUC_low,AUC_up, p_val)
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_Bratio_ICBR_Psyrri.pdf"))
+fig_width = 2.2
+fig_height = 2.2
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj$sensitivities, sensitivity=roc_obj$specificities), aes(x = 1 - specificity, y = sensitivity), color = "black", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    #x = 0.18, 
+    x = 0.45, 
+    y = 0.2,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+```
+
+# Figure 4D - Figure S16I. odds ratio of response rates by PBMC B ratio
+```{r}
+
+# Define PBMC B ratio cutoff for Bhigh vs Blow
+cutoff <- 5.5 # 4,5,6,7 5.5
+
+data_df = all_info[c( "B2ML", "ICBR")]
+colnames(data_df) = c("PBMC_B_ratio", "Response")
+data_df = na.omit(data_df)
+data_df$PBMC_B_ratio = data_df$PBMC_B_ratio*100
+
+# Divide into High and Low Groups
+data_df <- data_df %>%
+  mutate(B_group = ifelse(PBMC_B_ratio > cutoff, paste0("B > ",cutoff,"%"), paste0("B <= ",cutoff,"%")))
+
+# Calculate Response Ratios
+response_ratios <- data_df %>%
+  group_by(B_group) %>%
+  summarise(response_rate = mean(Response) * 100)  # Calculate as percentage
+response_ratios$B_group = factor(response_ratios$B_group, levels = c(paste0("B <= ",cutoff,"%"), paste0("B > ",cutoff,"%")))
+
+# Perform Statistical Test (Chi-Square Test)
+contingency_table <- table(data_df$B_group, data_df$Response)
+chi_test <- chisq.test(contingency_table)
+
+# Barplot
+pdf_file <- paste0(result_fig_dir,paste0("OddsRatio_PBMC_Bratio_ICBR_Psyrri.pdf"))
+fontSize = 1.2
+pdf(pdf_file, onefile=FALSE,height = 2.7, width = 1.4)
+ggplot(response_ratios, aes(x = B_group, y = response_rate, fill = B_group)) +
+  geom_bar(stat = "identity") +
+  labs(x = "", y = "Response rate (%)", title = "") +
+  
+  scale_fill_manual(values = c("#00305d", "#9c1915")) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color = "black", angle = 45, hjust = 1),  
+        panel.border = element_blank(), 
+        legend.position = "none"
+        )
+
+# Print contingency table and chi-test result
+print(contingency_table)
+print(chi_test)
+
+```
+
+# Figure 4EF - Figure S16J. K-M curves PBMC B ratio vs OS / PFS (Cohort11) 
+```{r}
+
+cutoff <- 5.5 # 4,5,6,7 5.5
+
+data_plot = all_info[c(Predictor,"PFS status","OS status","PFS mo","OS mo")] #   B2ML 
+colnames(data_plot) = c("Bratio", "PFS_event", "OS_event", "PFS_time", "OS_time")
+data_plot$OS_event = as.numeric(data_plot$OS_event)
+
+data_plot = na.omit(data_plot)
+
+data_plot$B_score = "High"
+data_plot$B_score[data_plot$Bratio <= cutoff*0.01] = "Low"
+data_plot$B_score <- relevel(factor(data_plot$B_score), ref = "Low")
+
+##### OS
+cancerData=data.frame(data_plot$B_score,data_plot$OS_time,data_plot$OS_event)
+cancerData = na.omit(cancerData)
+colnames(cancerData) = c("Score", "OS_Months", "OS_Event")
+sfit = survfit(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(OS_Months,OS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('OS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                 
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE,              
+  
+ 
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="OS probability",
+  break.time.by = 10,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c(paste0("B <= ",cutoff,"%"), paste0("B > ",cutoff,"%")),   
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+)
+
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_Psyrri_OS.pdf"),width=3.3*1, height=3*1)
+print(survp, newpage = FALSE)
+dev.off()
+
+
+
+
+
+##### PFS
+cancerData=data.frame(data_plot$B_score,data_plot$PFS_time,data_plot$PFS_event)
+cancerData = na.omit(cancerData)
+colnames(cancerData) = c("Score", "PFS_Months", "PFS_Event")
+sfit = survfit(Surv(PFS_Months,PFS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(PFS_Months,PFS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('PFS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                 
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE,              
+  
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="PFS probability",
+  break.time.by = 10,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c("B <= 5.5%", "B > 5.5%"),   
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+)
+
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_Morris_PFS.pdf"),width=3.3, height=3)
+print(survp, newpage = FALSE)
+dev.off()
+
+```
+
+

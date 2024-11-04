@@ -1,0 +1,590 @@
+---
+title: "Kassandra ranks as the most accurate deconvolution tool for estimating B cell abundance across multiple scRNAseq HNSCC datasets"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+# Aims:
+
+- Compare the accuracy for estimating B cell abundance from bulk RNAseq using different deconvolution tools 
+
+
+# load required package
+```{r, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+library(patchwork)
+library(RColorBrewer)
+library(stringr)
+
+library(purrr)
+library(readr)
+
+```
+
+
+# common functions and constants
+```{r}
+
+process_file <- function(file_path) {
+  sample_name <- gsub(".*result_(.*)\\.tsv", "\\1", basename(file_path))
+  df <- read_tsv(file_path, col_names = TRUE)
+  df <- df[, 1:2]  
+  colnames(df) <- c("Cell_Type", sample_name)
+  return(df)
+}
+
+```
+
+
+# make input for Kassandra
+```{r}
+
+### GSE234933
+# load TPM 
+TPM_GSE234933 = read.csv("../02.Input/GSE234933/GSE234933_pseudobulk_TPM_AllCells.csv")
+TPM_GSE234933$X <- sub("\\..*", "", TPM_GSE234933$X)
+TPM_GSE234933 = TPM_GSE234933[!duplicated(TPM_GSE234933$X), ]
+colnames(TPM_GSE234933) = c("Gene", colnames(TPM_GSE234933)[2:ncol(TPM_GSE234933)])
+rownames(TPM_GSE234933) = TPM_GSE234933$Gene
+TPM_GSE234933$Gene = NULL
+TPM_GSE234933 = round(TPM_GSE234933, 2)
+TPM_GSE234933_with_rownames <- data.frame(Gene = rownames(TPM_GSE234933), TPM_GSE234933, stringsAsFactors = FALSE)
+write.table(TPM_GSE234933_with_rownames, 
+            "../02.Input/GSE234933/GSE234933_pseudobulk_TPM_AllCells.tsv", 
+            row.names = F, 
+            sep = "\t", 
+            quote = FALSE)
+
+
+### GSE139324
+# load TPM 
+TPM_GSE139324 = read.csv("../02.Input/GSE139324/Tissue_pseudobulk_TPM_AllCells.csv")
+TPM_GSE139324 <- subset(TPM_GSE139324, !grepl("[.-]", X))
+TPM_GSE139324 = TPM_GSE139324[!duplicated(TPM_GSE139324$X), ]
+colnames(TPM_GSE139324) = c("Gene", colnames(TPM_GSE139324)[2:ncol(TPM_GSE139324)])
+rownames(TPM_GSE139324) = TPM_GSE139324$Gene
+TPM_GSE139324$Gene = NULL
+TPM_GSE139324 = round(TPM_GSE139324, 2)
+TPM_GSE139324_with_rownames <- data.frame(Gene = rownames(TPM_GSE139324), TPM_GSE139324, stringsAsFactors = FALSE)
+
+write.table(TPM_GSE139324_with_rownames[c(1,7:ncol(TPM_GSE139324_with_rownames))], 
+            "../02.Input/GSE139324/GSE139324_pseudobulk_TPM_AllCells.txt", 
+            row.names = F, 
+            sep = "\t", 
+            quote = FALSE)
+
+
+### GSE200996
+# load TPM 
+TPM_GSE200996 = read.csv("../02.Input/GSE200996/GSE200996_pseudobulk_TPM_AllCells_Tissue.csv")
+TPM_GSE200996$X <- sub("\\..*", "", TPM_GSE200996$X)
+TPM_GSE200996 = TPM_GSE200996[!duplicated(TPM_GSE200996$X), ]
+colnames(TPM_GSE200996) = c("Gene", colnames(TPM_GSE200996)[2:ncol(TPM_GSE200996)])
+rownames(TPM_GSE200996) = TPM_GSE200996$Gene
+TPM_GSE200996$Gene = NULL
+TPM_GSE200996 = round(TPM_GSE200996, 2)
+TPM_GSE200996_with_rownames <- data.frame(Gene = rownames(TPM_GSE200996), TPM_GSE200996, stringsAsFactors = FALSE)
+write.table(TPM_GSE200996_with_rownames, 
+            "../02.Input/GSE200996/GSE200996_pseudobulk_TPM_AllCells.tsv", 
+            row.names = F, 
+            sep = "\t", 
+            quote = FALSE)
+
+
+### GSE232240
+# load TPM 
+TPM_GSE232240 = read.csv("../02.Input/GSE232240/GSE232240_Tissue_pseudobulk_TPM_AllCells.txt")
+#TPM_GSE232240 <- subset(TPM_GSE232240, !grepl("[.-]", X))
+TPM_GSE232240 = TPM_GSE232240[!duplicated(TPM_GSE232240$X), ]
+colnames(TPM_GSE232240) = c("Gene", colnames(TPM_GSE232240)[2:ncol(TPM_GSE232240)])
+rownames(TPM_GSE232240) = TPM_GSE232240$Gene
+TPM_GSE232240$Gene = NULL
+TPM_GSE232240 = round(TPM_GSE232240, 2)
+TPM_GSE232240_with_rownames <- data.frame(Gene = rownames(TPM_GSE232240), TPM_GSE232240, stringsAsFactors = FALSE)
+write.table(TPM_GSE232240_with_rownames[c(1:21)], 
+            "../02.Input/GSE232240/GSE232240_pseudobulk_TPM_AllCells1.txt", 
+            row.names = F, 
+            sep = "\t", 
+            quote = FALSE)
+write.table(TPM_GSE232240_with_rownames[c(1,22:ncol(TPM_GSE232240_with_rownames))], 
+            "../02.Input/GSE232240/GSE232240_pseudobulk_TPM_AllCells2.txt", 
+            row.names = F, 
+            sep = "\t", 
+            quote = FALSE)
+
+```
+
+
+# Run Kassandra using the "Expression of genes (arbitrary form of input)" mode and choose sample type as "Tumor"
+
+
+# (GSE234933, Cohort6) compare deconvolved B cell abundance by other tools (CIBERSORT, TIMER, ...) and real B cell abundance (use the web tool http://timer.comp-genomics.org/timer/)
+# For TIMER, we chose HNSC as the cancer type
+```{r}
+
+# load real cell abundance
+GSE234933_cellRatio_df = read.csv(file = "../02.Input/GSE234933/Tissue_CellProportions_L2_L3_merged.csv")
+GSE234933_cellRatio_df$X = gsub("-","\\.",GSE234933_cellRatio_df$X)
+
+GSE234933_scc_df <- data.frame(Tool = character(), SCC = numeric(), stringsAsFactors = FALSE)
+############### estimated cell abundance from TIMER and five other tools  (use the web tool http://timer.comp-genomics.org/timer/)
+GSE234933_ICF_df_timer  = read.csv("../02.Input/GSE234933/Deconvolution/GSE234933_ICF_df_timer2.csv")
+cell_type = GSE234933_ICF_df_timer$cell_type
+GSE234933_ICF_df_timer$cell_type = NULL
+sample_IDs = colnames(GSE234933_ICF_df_timer)
+GSE234933_ICF_df_timer = data.frame(t(GSE234933_ICF_df_timer))
+colnames(GSE234933_ICF_df_timer) = cell_type
+GSE234933_ICF_df_timer$X = sample_IDs
+colnames(GSE234933_ICF_df_timer)
+# timer
+GSE234933_ICF_df_timer$B_cells = GSE234933_ICF_df_timer$`B cell_TIMER`
+Bcell_compare_df = merge(GSE234933_cellRatio_df[,c("X", "B_cells")], GSE234933_ICF_df_timer[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_timer")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman")
+GSE234933_scc_df[1, ] <- c("TIMER", scc)
+# quantiseq
+GSE234933_ICF_df_quantiseq = GSE234933_ICF_df_timer
+GSE234933_ICF_df_quantiseq$B_cells = GSE234933_ICF_df_quantiseq$`B cell_QUANTISEQ`
+Bcell_compare_df = merge(GSE234933_cellRatio_df[,c("X", "B_cells")], GSE234933_ICF_df_quantiseq[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_quantiseq")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman")
+GSE234933_scc_df[2, ] <- c("QUANTISEQ", scc)
+# epic
+GSE234933_ICF_df_epic = GSE234933_ICF_df_timer
+GSE234933_ICF_df_epic$B_cells = GSE234933_ICF_df_epic$`B cell_EPIC`
+Bcell_compare_df = merge(GSE234933_cellRatio_df[,c("X", "B_cells")], GSE234933_ICF_df_epic[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_epic")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman")
+GSE234933_scc_df[3, ] <- c("EPIC", scc)
+# XCELL
+GSE234933_ICF_df_xcell = GSE234933_ICF_df_timer
+GSE234933_ICF_df_xcell$B_cells = GSE234933_ICF_df_xcell$`B cell_XCELL`
+Bcell_compare_df = merge(GSE234933_cellRatio_df[,c("X", "B_cells")], GSE234933_ICF_df_xcell[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_xcell")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman")
+GSE234933_scc_df[4, ] <- c("XCELL", scc)
+# CIBERSORT
+GSE234933_ICF_df_cibersort = GSE234933_ICF_df_timer
+GSE234933_ICF_df_cibersort$B_cells = rowSums(GSE234933_ICF_df_cibersort[c("B cell naive_CIBERSORT", "B cell memory_CIBERSORT", "B cell plasma_CIBERSORT")])
+Bcell_compare_df = merge(GSE234933_cellRatio_df[,c("X", "B_cells")], GSE234933_ICF_df_cibersort[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman")
+GSE234933_scc_df[5, ] <- c("CIBERSORT", scc)
+
+# CIBERSORT_abs
+GSE234933_ICF_df_cibersort_abs = GSE234933_ICF_df_timer
+GSE234933_ICF_df_cibersort_abs$B_cells = rowSums(GSE234933_ICF_df_cibersort[c("B cell naive_CIBERSORT-ABS", "B cell memory_CIBERSORT-ABS", "B cell plasma_CIBERSORT-ABS")])
+Bcell_compare_df = merge(GSE234933_cellRatio_df[,c("X", "B_cells")], GSE234933_ICF_df_cibersort_abs[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort_abs")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman")
+GSE234933_scc_df[6, ] <- c("CIBERSORT_abs", scc)
+
+
+############### Kassandra based deconvolution (use the web tool https://science.bostongene.com/kassandra/tool)
+# load Kassandra predicted cell abundance
+data_dir = "../02.Input/GSE234933/deconvolution/Kassandra"
+tsv_files <- list.files(path = data_dir, pattern = "*.tsv", full.names = TRUE)
+list_of_dfs <- lapply(tsv_files, process_file)
+GSE234933_Kassandra_cellRatio_df <- list_of_dfs %>%
+  reduce(full_join, by = "Cell_Type")
+Cell_Types = GSE234933_Kassandra_cellRatio_df$Cell_Type
+GSE234933_Kassandra_cellRatio_df$Cell_Type = NULL
+GSE234933_Kassandra_cellRatio_df = data.frame(t(GSE234933_Kassandra_cellRatio_df))
+colnames(GSE234933_Kassandra_cellRatio_df) = Cell_Types
+GSE234933_Kassandra_cellRatio_df$X = rownames(GSE234933_Kassandra_cellRatio_df)
+GSE234933_Bcell_compare_df = merge(GSE234933_cellRatio_df[,c("X", "B_cells")], GSE234933_Kassandra_cellRatio_df[,c("X", "B_cells")], by = "X")
+colnames(GSE234933_Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_Kassandra")
+cor.test(GSE234933_Bcell_compare_df$Bcell_true, GSE234933_Bcell_compare_df$Bcell_Kassandra, method = "spearman") 
+scc = cor(GSE234933_Bcell_compare_df$Bcell_true, GSE234933_Bcell_compare_df$Bcell_Kassandra, method = "spearman")
+GSE234933_scc_df[7, ] <- c("KASSANDRA", scc)
+
+GSE234933_scc_df$SCC <- as.numeric(GSE234933_scc_df$SCC)
+
+```
+
+# (GSE139324, Cohort8) compare deconvolved B cell abundance by other tools (CIBERSORT, TIMER, ...) and real B cell abundance (use the web tool http://timer.comp-genomics.org/timer/)
+```{r}
+
+# load real cell abundance
+GSE139324_cellRatio_df = read.csv(file = "../02.Input/GSE139324/Tissue_CellProportions_L2.csv")
+GSE139324_cellRatio_df$X = gsub("-","\\.",GSE139324_cellRatio_df$X)
+GSE139324_cellRatio_df = GSE139324_cellRatio_df[!grepl("Tonsil", GSE139324_cellRatio_df$X),]
+
+GSE139324_scc_df <- data.frame(Tool = character(), SCC = numeric(), stringsAsFactors = FALSE)
+############### estimated cell abundance from TIMER and five other tools  (use the web tool http://timer.comp-genomics.org/timer/)
+GSE139324_ICF_df_timer  = read.csv("../02.Input/GSE139324/Deconvolution/GSE139324_ICF_df_timer2.csv")
+cell_type = GSE139324_ICF_df_timer$cell_type
+GSE139324_ICF_df_timer$cell_type = NULL
+sample_IDs = colnames(GSE139324_ICF_df_timer)
+GSE139324_ICF_df_timer = data.frame(t(GSE139324_ICF_df_timer))
+colnames(GSE139324_ICF_df_timer) = cell_type
+GSE139324_ICF_df_timer$X = sample_IDs
+colnames(GSE139324_ICF_df_timer)
+GSE139324_ICF_df_timer = GSE139324_ICF_df_timer[!grepl("Tonsil", rownames(GSE139324_ICF_df_timer)),]
+# timer
+GSE139324_ICF_df_timer$B_cells = GSE139324_ICF_df_timer$`B cell_TIMER`
+Bcell_compare_df = merge(GSE139324_cellRatio_df[,c("X", "B")], GSE139324_ICF_df_timer[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_timer")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman")
+GSE139324_scc_df[1, ] <- c("TIMER", scc)
+# quantiseq
+GSE139324_ICF_df_quantiseq = GSE139324_ICF_df_timer
+GSE139324_ICF_df_quantiseq$B_cells = GSE139324_ICF_df_quantiseq$`B cell_QUANTISEQ`
+Bcell_compare_df = merge(GSE139324_cellRatio_df[,c("X", "B")], GSE139324_ICF_df_quantiseq[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_quantiseq")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman")
+GSE139324_scc_df[2, ] <- c("QUANTISEQ", scc)
+# epic
+GSE139324_ICF_df_epic = GSE139324_ICF_df_timer
+GSE139324_ICF_df_epic$B_cells = GSE139324_ICF_df_epic$`B cell_EPIC`
+Bcell_compare_df = merge(GSE139324_cellRatio_df[,c("X", "B")], GSE139324_ICF_df_epic[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_epic")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman")
+GSE139324_scc_df[3, ] <- c("EPIC", scc)
+# XCELL
+GSE139324_ICF_df_xcell = GSE139324_ICF_df_timer
+GSE139324_ICF_df_xcell$B_cells = GSE139324_ICF_df_xcell$`B cell_XCELL`
+Bcell_compare_df = merge(GSE139324_cellRatio_df[,c("X", "B")], GSE139324_ICF_df_xcell[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_xcell")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman")
+GSE139324_scc_df[4, ] <- c("XCELL", scc)
+# CIBERSORT
+GSE139324_ICF_df_cibersort = GSE139324_ICF_df_timer
+GSE139324_ICF_df_cibersort$B_cells = rowSums(GSE139324_ICF_df_cibersort[c("B cell naive_CIBERSORT", "B cell memory_CIBERSORT", "B cell plasma_CIBERSORT")])
+Bcell_compare_df = merge(GSE139324_cellRatio_df[,c("X", "B")], GSE139324_ICF_df_cibersort[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman")
+GSE139324_scc_df[5, ] <- c("CIBERSORT", scc)
+# CIBERSORT_abs
+GSE139324_ICF_df_cibersort_abs = GSE139324_ICF_df_timer
+GSE139324_ICF_df_cibersort_abs$B_cells = rowSums(GSE139324_ICF_df_cibersort[c("B cell naive_CIBERSORT-ABS", "B cell memory_CIBERSORT-ABS", "B cell plasma_CIBERSORT-ABS")])
+Bcell_compare_df = merge(GSE139324_cellRatio_df[,c("X", "B")], GSE139324_ICF_df_cibersort_abs[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort_abs")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman")
+GSE139324_scc_df[6, ] <- c("CIBERSORT_abs", scc)
+
+
+
+############### Kassandra based deconvolution (use the web tool https://science.bostongene.com/kassandra/tool)
+# load Kassandra predicted cell abundance
+data_dir = "../02.Input/GSE139324/deconvolution/Kassandra/"
+tsv_files <- list.files(path = data_dir, pattern = "*.tsv", full.names = TRUE)
+list_of_dfs <- lapply(tsv_files, process_file)
+GSE139324_Kassandra_cellRatio_df <- list_of_dfs %>%
+  reduce(full_join, by = "Cell_Type")
+Cell_Types = GSE139324_Kassandra_cellRatio_df$Cell_Type
+GSE139324_Kassandra_cellRatio_df$Cell_Type = NULL
+GSE139324_Kassandra_cellRatio_df = data.frame(t(GSE139324_Kassandra_cellRatio_df))
+colnames(GSE139324_Kassandra_cellRatio_df) = Cell_Types
+GSE139324_Kassandra_cellRatio_df$X = rownames(GSE139324_Kassandra_cellRatio_df)
+GSE139324_Bcell_compare_df = merge(GSE139324_cellRatio_df[,c("X", "B")], GSE139324_Kassandra_cellRatio_df[,c("X", "B_cells")], by = "X")
+colnames(GSE139324_Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_Kassandra")
+cor.test(GSE139324_Bcell_compare_df$Bcell_true, GSE139324_Bcell_compare_df$Bcell_Kassandra, method = "spearman")
+scc = cor(GSE139324_Bcell_compare_df$Bcell_true, GSE139324_Bcell_compare_df$Bcell_Kassandra, method = "spearman")
+GSE139324_scc_df[7, ] <- c("KASSANDRA", scc)
+
+GSE139324_scc_df$SCC <- as.numeric(GSE139324_scc_df$SCC)
+
+
+
+```
+
+# (GSE200996, Cohort7) compare deconvolved B cell abundance by other tools (CIBERSORT, TIMER, ...) and real B cell abundance (use the web tool http://timer.comp-genomics.org/timer/)
+```{r}
+
+# load real cell abundance
+GSE200996_cellRatio_df = read.csv(file = "../02.Input/GSE200996/GSE200996_Tissue_CellProportions_L2.csv")
+GSE200996_cellRatio_df$X = gsub("-","\\.",GSE200996_cellRatio_df$X)
+
+GSE200996_scc_df <- data.frame(Tool = character(), SCC = numeric(), stringsAsFactors = FALSE)
+############### estimated cell abundance from TIMER and five other tools  (use the web tool http://timer.comp-genomics.org/timer/)
+GSE200996_ICF_df_timer  = read.csv("../02.Input/GSE200996/Deconvolution/GSE200996_ICF_df_timer2.csv")
+cell_type = GSE200996_ICF_df_timer$cell_type
+GSE200996_ICF_df_timer$cell_type = NULL
+sample_IDs = colnames(GSE200996_ICF_df_timer)
+GSE200996_ICF_df_timer = data.frame(t(GSE200996_ICF_df_timer))
+colnames(GSE200996_ICF_df_timer) = cell_type
+GSE200996_ICF_df_timer$X = sample_IDs
+colnames(GSE200996_ICF_df_timer)
+# timer
+GSE200996_ICF_df_timer$B_cells = GSE200996_ICF_df_timer$`B cell_TIMER`
+Bcell_compare_df = merge(GSE200996_cellRatio_df[,c("X", "B")], GSE200996_ICF_df_timer[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_timer")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman")
+GSE200996_scc_df[1, ] <- c("TIMER", scc)
+# quantiseq
+GSE200996_ICF_df_quantiseq = GSE200996_ICF_df_timer
+GSE200996_ICF_df_quantiseq$B_cells = GSE200996_ICF_df_quantiseq$`B cell_QUANTISEQ`
+Bcell_compare_df = merge(GSE200996_cellRatio_df[,c("X", "B")], GSE200996_ICF_df_quantiseq[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_quantiseq")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman")
+GSE200996_scc_df[2, ] <- c("QUANTISEQ", scc)
+# epic
+GSE200996_ICF_df_epic = GSE200996_ICF_df_timer
+GSE200996_ICF_df_epic$B_cells = GSE200996_ICF_df_epic$`B cell_EPIC`
+Bcell_compare_df = merge(GSE200996_cellRatio_df[,c("X", "B")], GSE200996_ICF_df_epic[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_epic")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman")
+GSE200996_scc_df[3, ] <- c("EPIC", scc)
+# XCELL
+GSE200996_ICF_df_xcell = GSE200996_ICF_df_timer
+GSE200996_ICF_df_xcell$B_cells = GSE200996_ICF_df_xcell$`B cell_XCELL`
+Bcell_compare_df = merge(GSE200996_cellRatio_df[,c("X", "B")], GSE200996_ICF_df_xcell[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_xcell")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman")
+GSE200996_scc_df[4, ] <- c("XCELL", scc)
+# CIBERSORT
+GSE200996_ICF_df_cibersort = GSE200996_ICF_df_timer
+GSE200996_ICF_df_cibersort$B_cells = rowSums(GSE200996_ICF_df_cibersort[c("B cell naive_CIBERSORT", "B cell memory_CIBERSORT", "B cell plasma_CIBERSORT")])
+Bcell_compare_df = merge(GSE200996_cellRatio_df[,c("X", "B")], GSE200996_ICF_df_cibersort[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman")
+GSE200996_scc_df[5, ] <- c("CIBERSORT", scc)
+# CIBERSORT_abs
+GSE200996_ICF_df_cibersort_abs = GSE200996_ICF_df_timer
+GSE200996_ICF_df_cibersort_abs$B_cells = rowSums(GSE200996_ICF_df_cibersort[c("B cell naive_CIBERSORT-ABS", "B cell memory_CIBERSORT-ABS", "B cell plasma_CIBERSORT-ABS")])
+Bcell_compare_df = merge(GSE200996_cellRatio_df[,c("X", "B")], GSE200996_ICF_df_cibersort_abs[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort_abs")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman")
+GSE200996_scc_df[6, ] <- c("CIBERSORT_abs", scc)
+
+
+############### Kassandra based deconvolution (use the web tool https://science.bostongene.com/kassandra/tool)
+# load Kassandra predicted cell abundance
+data_dir = "../02.Input/GSE200996/deconvolution/Kassandra/"
+tsv_files <- list.files(path = data_dir, pattern = "*.tsv", full.names = TRUE)
+list_of_dfs <- lapply(tsv_files, process_file)
+GSE200996_Kassandra_cellRatio_df <- list_of_dfs %>%
+  reduce(full_join, by = "Cell_Type")
+Cell_Types = GSE200996_Kassandra_cellRatio_df$Cell_Type
+GSE200996_Kassandra_cellRatio_df$Cell_Type = NULL
+GSE200996_Kassandra_cellRatio_df = data.frame(t(GSE200996_Kassandra_cellRatio_df))
+colnames(GSE200996_Kassandra_cellRatio_df) = Cell_Types
+GSE200996_Kassandra_cellRatio_df$X = rownames(GSE200996_Kassandra_cellRatio_df)
+GSE200996_Bcell_compare_df = merge(GSE200996_cellRatio_df[,c("X", "B")], GSE200996_Kassandra_cellRatio_df[,c("X", "B_cells")], by = "X")
+colnames(GSE200996_Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_Kassandra")
+cor.test(GSE200996_Bcell_compare_df$Bcell_true, GSE200996_Bcell_compare_df$Bcell_Kassandra, method = "spearman") 
+scc = cor(GSE200996_Bcell_compare_df$Bcell_true, GSE200996_Bcell_compare_df$Bcell_Kassandra, method = "spearman")
+GSE200996_scc_df[7, ] <- c("KASSANDRA", scc)
+
+GSE200996_scc_df$SCC <- as.numeric(GSE200996_scc_df$SCC)
+
+
+```
+
+# (GSE232240 IMCISION, Cohort5) compare deconvolved B cell abundance by other tools (CIBERSORT, TIMER, ...) and real B cell abundance (use the web tool http://timer.comp-genomics.org/timer/)
+```{r}
+
+# load real cell abundance
+GSE232240_cellRatio_df = read.csv(file = "../02.Input/GSE232240/Tissue_CellProportions.csv")
+GSE232240_cellRatio_df$X = gsub("_","\\.",GSE232240_cellRatio_df$X)
+
+GSE232240_scc_df <- data.frame(Tool = character(), SCC = numeric(), stringsAsFactors = FALSE)
+############### estimated cell abundance from TIMER and five other tools  (use the web tool http://timer.comp-genomics.org/timer/)
+GSE232240_ICF_df_timer  = read.csv("../02.Input/GSE232240/Deconvolution/GSE232240_ICF_df_timer2.csv")
+cell_type = GSE232240_ICF_df_timer$cell_type
+GSE232240_ICF_df_timer$cell_type = NULL
+sample_IDs = colnames(GSE232240_ICF_df_timer)
+GSE232240_ICF_df_timer = data.frame(t(GSE232240_ICF_df_timer))
+colnames(GSE232240_ICF_df_timer) = cell_type
+GSE232240_ICF_df_timer$X = sample_IDs
+colnames(GSE232240_ICF_df_timer)
+# timer
+GSE232240_ICF_df_timer$B_cells = GSE232240_ICF_df_timer$`B cell_TIMER`
+Bcell_compare_df = merge(GSE232240_cellRatio_df[,c("X", "B")], GSE232240_ICF_df_timer[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_timer")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_timer, method = "spearman")
+GSE232240_scc_df[1, ] <- c("TIMER", scc)
+# quantiseq
+GSE232240_ICF_df_quantiseq = GSE232240_ICF_df_timer
+GSE232240_ICF_df_quantiseq$B_cells = GSE232240_ICF_df_quantiseq$`B cell_QUANTISEQ`
+Bcell_compare_df = merge(GSE232240_cellRatio_df[,c("X", "B")], GSE232240_ICF_df_quantiseq[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_quantiseq")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_quantiseq, method = "spearman")
+GSE232240_scc_df[2, ] <- c("QUANTISEQ", scc)
+# epic
+GSE232240_ICF_df_epic = GSE232240_ICF_df_timer
+GSE232240_ICF_df_epic$B_cells = GSE232240_ICF_df_epic$`B cell_EPIC`
+Bcell_compare_df = merge(GSE232240_cellRatio_df[,c("X", "B")], GSE232240_ICF_df_epic[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_epic")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_epic, method = "spearman")
+GSE232240_scc_df[3, ] <- c("EPIC", scc)
+# XCELL
+GSE232240_ICF_df_xcell = GSE232240_ICF_df_timer
+GSE232240_ICF_df_xcell$B_cells = GSE232240_ICF_df_xcell$`B cell_XCELL`
+Bcell_compare_df = merge(GSE232240_cellRatio_df[,c("X", "B")], GSE232240_ICF_df_xcell[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_xcell")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_xcell, method = "spearman")
+GSE232240_scc_df[4, ] <- c("XCELL", scc)
+# CIBERSORT
+GSE232240_ICF_df_cibersort = GSE232240_ICF_df_timer
+GSE232240_ICF_df_cibersort$B_cells = rowSums(GSE232240_ICF_df_cibersort[c("B cell naive_CIBERSORT", "B cell memory_CIBERSORT", "B cell plasma_CIBERSORT")])
+Bcell_compare_df = merge(GSE232240_cellRatio_df[,c("X", "B")], GSE232240_ICF_df_cibersort[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort, method = "spearman")
+GSE232240_scc_df[5, ] <- c("CIBERSORT", scc)
+# CIBERSORT_abs
+GSE232240_ICF_df_cibersort_abs = GSE232240_ICF_df_timer
+GSE232240_ICF_df_cibersort_abs$B_cells = rowSums(GSE232240_ICF_df_cibersort[c("B cell naive_CIBERSORT-ABS", "B cell memory_CIBERSORT-ABS", "B cell plasma_CIBERSORT-ABS")])
+Bcell_compare_df = merge(GSE232240_cellRatio_df[,c("X", "B")], GSE232240_ICF_df_cibersort_abs[,c("X", "B_cells")], by = "X")
+colnames(Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_cibersort_abs")
+cor.test(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman") 
+scc = cor(Bcell_compare_df$Bcell_true, Bcell_compare_df$Bcell_cibersort_abs, method = "spearman")
+GSE232240_scc_df[6, ] <- c("CIBERSORT_abs", scc)
+
+
+############### Kassandra based deconvolution (use the web tool https://science.bostongene.com/kassandra/tool)
+# load Kassandra predicted cell abundance
+data_dir = "../02.Input/GSE232240/deconvolution/Kassandra/"
+tsv_files <- list.files(path = data_dir, pattern = "*.tsv", full.names = TRUE)
+list_of_dfs <- lapply(tsv_files, process_file)
+GSE232240_Kassandra_cellRatio_df <- list_of_dfs %>%
+  reduce(full_join, by = "Cell_Type")
+Cell_Types = GSE232240_Kassandra_cellRatio_df$Cell_Type
+GSE232240_Kassandra_cellRatio_df$Cell_Type = NULL
+GSE232240_Kassandra_cellRatio_df = data.frame(t(GSE232240_Kassandra_cellRatio_df))
+colnames(GSE232240_Kassandra_cellRatio_df) = Cell_Types
+GSE232240_Kassandra_cellRatio_df$X = rownames(GSE232240_Kassandra_cellRatio_df)
+GSE232240_Bcell_compare_df = merge(GSE232240_cellRatio_df[,c("X", "B")], GSE232240_Kassandra_cellRatio_df[,c("X", "B_cells")], by = "X")
+colnames(GSE232240_Bcell_compare_df) = c("SampleID", "Bcell_true", "Bcell_Kassandra")
+cor.test(GSE232240_Bcell_compare_df$Bcell_true, GSE232240_Bcell_compare_df$Bcell_Kassandra, method = "spearman") 
+scc = cor(GSE232240_Bcell_compare_df$Bcell_true, GSE232240_Bcell_compare_df$Bcell_Kassandra, method = "spearman")
+GSE232240_scc_df[7, ] <- c("KASSANDRA", scc)
+
+GSE232240_scc_df$SCC <- as.numeric(GSE232240_scc_df$SCC)
+
+
+
+```
+
+# Figure S3 (left panels). plot correlation between Kassandra predicted and true B cell abundance in all 4 HNSCC scRNAseq datasets.
+```{r}
+
+result_fig_dir = "../03.Results/Figures/"
+dataset = "GSE232240"
+all_info = get(paste0(dataset, "_Bcell_compare_df"))
+all_info$Bcell_true = as.numeric(all_info$Bcell_true* 100)
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Btrue_vs_Bkassandra_corr_", dataset, ".pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "True (%)"
+ylabel = "Kassandra predicted (%)"
+
+
+scc <- cor(all_info$Bcell_true, all_info$Bcell_Kassandra, method = "spearman")
+p_val <- cor.test(all_info$Bcell_true, all_info$Bcell_Kassandra, method = "spearman")$p.value
+label <- sprintf("r = %.2f\np = %.1g", scc, p_val)
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(all_info, aes(x = Bcell_true, y = Bcell_Kassandra)) +
+  geom_point() +
+  annotate(
+    geom = "text",
+    x = min(all_info$Bcell_true),
+    y = max(all_info$Bcell_Kassandra)*0.9,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  labs(x = xlabel, y = ylabel) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+
+dev.off()
+
+```
+
+# Figure S3 (right panels). plot ranked SCCs of different tools in all 4 HNSCC scRNAseq datasets.
+```{r}
+
+library(openxlsx)
+
+result_fig_dir = "../03.Results/Figures/"
+dataset = "GSE232240"
+result_df = get(paste0(dataset, "_scc_df"))
+
+# rank SCCs
+result_df <- result_df[order(-result_df$SCC), ]
+rownames(result_df) = result_df$Tool
+result_df$Tool = factor(result_df$Tool, levels = result_df$Tool)
+
+###### plot
+barplot_data = result_df
+
+pdf(file = paste0(result_fig_dir, "Bar_deconvolution_tools_scc_",dataset,".pdf"),height = 3, width = 3) 
+ggplot(barplot_data, aes(x = Tool, y = SCC)) +
+  geom_bar(stat = "identity", fill = c("black",rep("white",6)), color = "black", width = 0.7) +
+  labs(x = "", y = "Spearman cor. coef.") +
+  scale_y_continuous(limits = c(0, 1.05), breaks = c(0,0.5,1)) +  
+  theme(panel.grid = element_blank(), 
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(angle = 45, hjust = 1, color="black"),
+        legend.position = "none"
+        )+
+  scale_x_discrete(labels = result_df$Tool) 
+
+dev.off()
+
+```
+
+

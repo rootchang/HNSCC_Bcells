@@ -1,0 +1,170 @@
+---
+title: "Correlation of cell abundance between tumor and blood of different immune cell types in two independent HNSCC cohorts"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- study relationship of abundances of different cell types between PBMC and tumor 
+
+
+# load required package
+```{r}
+
+library(survival)
+library(survminer)
+library(ggplot2)
+library(RColorBrewer)
+library(glmnet)
+library(rlang)
+library(pROC)
+library(verification)
+library(tibble)
+library(gridExtra)
+library(forestplot)
+
+library(dplyr)
+
+```
+
+
+# Set directories & parameters
+```{r}
+
+data_dir <- "../02.Input//"
+result_dir <- "../03.Results/Data/"
+result_fig_dir <- "../03.Results/Figures/"
+
+```
+
+# load cell ratio data
+```{r}
+
+B_columns <- c("MemoryB", "ABC", "NaiveB", "GCB", "PlasmaB","OtherB")
+T_columns <- c("CD8T","OtherT","Thelp","Tregs")
+MonoMac_columns <- c("Monocytes","Macrophages")
+
+# GSE139324
+GSE139324_tumor_ICF_df = read.csv('../02.Input/GSE139324/Tissue_CellProportions_L3.csv', header=TRUE, row.names = 1) 
+GSE139324_tumor_ICF_df$Bcells = rowSums(GSE139324_tumor_ICF_df[intersect(B_columns, colnames(GSE139324_tumor_ICF_df))])
+GSE139324_tumor_ICF_df$Tcells = rowSums(GSE139324_tumor_ICF_df[intersect(T_columns, colnames(GSE139324_tumor_ICF_df))])
+GSE139324_tumor_ICF_df$MonoMac = rowSums(GSE139324_tumor_ICF_df[intersect(MonoMac_columns, colnames(GSE139324_tumor_ICF_df))])
+
+# GSE139324
+GSE139324_PBMC_ICF_df = read.csv('../02.Input/GSE139324/PBMC_CellProportions_L3.csv', header=TRUE, row.names = 1) 
+GSE139324_PBMC_ICF_df$Bcells = rowSums(GSE139324_PBMC_ICF_df[intersect(B_columns, colnames(GSE139324_PBMC_ICF_df))])
+GSE139324_PBMC_ICF_df$Tcells = rowSums(GSE139324_PBMC_ICF_df[intersect(T_columns, colnames(GSE139324_PBMC_ICF_df))])
+GSE139324_PBMC_ICF_df$MonoMac = rowSums(GSE139324_PBMC_ICF_df[intersect(MonoMac_columns, colnames(GSE139324_PBMC_ICF_df))])
+
+# GSE200996
+GSE200996_tumor_ICF_df = read.csv('../02.Input/GSE200996/Tissue_CellProportions_L3.csv', header=TRUE, row.names = 1) 
+GSE200996_tumor_ICF_df$Bcells = rowSums(GSE200996_tumor_ICF_df[intersect(B_columns, colnames(GSE200996_tumor_ICF_df))])
+GSE200996_tumor_ICF_df$Tcells = rowSums(GSE200996_tumor_ICF_df[intersect(T_columns, colnames(GSE200996_tumor_ICF_df))])
+GSE200996_tumor_ICF_df$MonoMac = rowSums(GSE200996_tumor_ICF_df[intersect(MonoMac_columns, colnames(GSE200996_tumor_ICF_df))])
+
+# GSE200996
+GSE200996_PBMC_ICF_df = read.csv('../02.Input/GSE200996/PBMC_CellProportions_L3.csv', header=TRUE, row.names = 1) 
+GSE200996_PBMC_ICF_df$Bcells = rowSums(GSE200996_PBMC_ICF_df[intersect(B_columns, colnames(GSE200996_PBMC_ICF_df))])
+GSE200996_PBMC_ICF_df$Tcells = rowSums(GSE200996_PBMC_ICF_df[intersect(T_columns, colnames(GSE200996_PBMC_ICF_df))])
+GSE200996_PBMC_ICF_df$MonoMac = rowSums(GSE200996_PBMC_ICF_df[intersect(MonoMac_columns, colnames(GSE200996_PBMC_ICF_df))])
+
+```
+
+# Figure S5: correlation of cell ratio between PBMC and tumor (GSE139324, GSE200996)
+```{r}
+
+cell_type_test = "NK" # c("Bcells", "Tcells", "CD8T", "Thelp", "Tregs", "DC", "MonoMac", "NK")
+max_ratio_limit = 40 # Tcells/MonoMac: 100 CD8T/Thelp: 70 Tregs/NK: 40 DC: 18
+
+all_info = GSE139324_tumor_ICF_df[cell_type_test]*100
+all_info$PatientID = rownames(all_info)
+all_info = all_info[6:nrow(all_info),]
+all_info$PatientID <- sub("_TIL$", "", all_info$PatientID)
+colnames(all_info) = c("Tumor_ratio", "PatientID")
+
+all_info2 = GSE139324_PBMC_ICF_df[cell_type_test]*100
+all_info2$PatientID = rownames(all_info2)
+all_info2 = all_info2[7:nrow(all_info2),]
+all_info2$PatientID <- sub("_PBMC$", "", all_info2$PatientID)
+colnames(all_info2) = c("PBMC_ratio", "PatientID")
+all_info_GSE139324 = merge(all_info, all_info2, by = "PatientID", all.x = T)
+
+
+
+all_info = GSE200996_tumor_ICF_df[cell_type_test]*100
+all_info$PatientID = rownames(all_info)
+all_info$PatientID <- sub("_pre_tumor$", "_pre", all_info$PatientID)
+all_info$PatientID <- sub("_post_tumor$", "_post", all_info$PatientID)
+colnames(all_info) = c("Tumor_ratio", "PatientID")
+
+all_info2 = GSE200996_PBMC_ICF_df[cell_type_test]*100
+all_info2$PatientID = rownames(all_info2)
+all_info2$PatientID <- sub("-B1$", "_pre", all_info2$PatientID)
+all_info2$PatientID <- sub("-B2$", "_post", all_info2$PatientID)
+colnames(all_info2) = c("PBMC_ratio", "PatientID")
+
+all_info_GSE200996 = merge(all_info, all_info2, by = "PatientID", all.x = T)
+all_info_GSE200996 = na.omit(all_info_GSE200996)
+
+
+
+
+# Calculate correlation coefficients and p-values
+cor_139324 <- cor.test(all_info_GSE139324$Tumor_ratio, all_info_GSE139324$PBMC_ratio)
+cor_200996 <- cor.test(all_info_GSE200996$Tumor_ratio, all_info_GSE200996$PBMC_ratio)
+
+# Create plot
+pdf_file <- paste0(result_fig_dir,paste0("PBMC_vs_tumor_",cell_type_test,"_ratio_corr_sc.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "Tumor (%)" # B-to-immune cell ratio 
+ylabel = "PBMC (%)" # B-to-immune cell ratio 
+
+p <- ggplot() +
+  # Points and fit line for all_info_GSE139324
+  geom_point(data = all_info_GSE139324, aes(x = Tumor_ratio, y = PBMC_ratio), color = "#E69F00") +
+  geom_smooth(data = all_info_GSE139324, aes(x = Tumor_ratio, y = PBMC_ratio), method = "lm", color = "#E69F00", se = FALSE) +
+  # Points and fit line for all_info_GSE200996
+  geom_point(data = all_info_GSE200996, aes(x = Tumor_ratio, y = PBMC_ratio), color = "#56B4E9") +
+  geom_smooth(data = all_info_GSE200996, aes(x = Tumor_ratio, y = PBMC_ratio), method = "lm", color = "#56B4E9", se = FALSE) +
+  # Labels and theme
+  labs(x = xlabel, y = ylabel) +
+  coord_cartesian(xlim = c(0, max_ratio_limit),ylim = c(0, max_ratio_limit)) + 
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+
+# Add correlation coefficients and p-values
+p2 <- p + 
+  annotate("text", x = 0, y = 85*max_ratio_limit/100, label = sprintf("r = %.2f, p = %.2g", cor_139324$estimate, cor_139324$p.value), color = "#E69F00", hjust = 0) +
+  annotate("text", x = 0, y = 95*max_ratio_limit/100, label = sprintf("r = %.2f, p = %.2g", cor_200996$estimate, cor_200996$p.value), color = "#56B4E9", hjust = 0)
+
+ggsave(pdf_file, plot = p2, width = fig_width, height = fig_height)
+
+```

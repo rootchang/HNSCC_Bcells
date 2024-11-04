@@ -1,0 +1,150 @@
+---
+title: "Cell type annotation for scRNAseq data Cohort7 and Cohort8"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+# Aims:
+
+- Cell type annotation for Cohort7 and Cohort8
+
+# load required package
+```{r, include=FALSE}
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+```
+
+# set color
+```{r}
+
+my.cols <- c("#7CD5C8FF", "#507D41FF", "#DF8F44FF", "#6A6599FF", "#CB7C77FF", "#6B42C8FF",
+             "#C9D73DFF", "#C555CBFF", "#AED688FF", "#502E71FF", "#C49A3FFF",
+             "#42B540FF", "#0099B4FF", "#925E9FFF", 
+             "#FDAF91FF", "#AD002AFF", "#00468BFF", "#ED0000FF",
+             "#6A7DC9FF", "#D7652DFF", 
+             "#CF4C8BFF", "#5D8D9CFF", "#722E41FF", "#C8B693FF", "#C5383CFF", "#79AF97FF", "#68D359FF", "#3575A1FF", "#347FA4FF")
+
+```
+
+# set path
+```{r}
+
+# local
+data_dir <- "../02.Input/TCGA_HNC/"
+processed_dir <- "../03.Results/Data/"
+fig_dir = "../03.Results/Figures/"
+
+```
+
+# load data
+```{r}
+
+merged_seu_GSE139324_Tissue = readRDS(file = "../02.Input/GSE139324/seu_Tissue.rds") 
+merged_seu_GSE139324_PBMC = readRDS(file = "../02.Input/GSE139324/seu_PBMC.rds") 
+merged_seu_GSE200996_Tissue = readRDS(file = "../02.Input/GSE200996/seu_Tissue.rds") 
+merged_seu_GSE200996_PBMC = readRDS(file = "../02.Input/GSE200996/seu_PBMC.rds") 
+
+```
+
+# UMAP
+```{r}
+
+cat(unique(merged_seu_GSE139324_PBMC$cell_type_L3), sep = '","')
+cat(unique(merged_seu_GSE139324_Tissue$cell_type_L3), sep = '","')
+
+cat(unique(merged_seu_GSE200996_PBMC$cell_type_L3), sep = '","')
+cat(unique(merged_seu_GSE200996_Tissue$cell_type_L3), sep = '","')
+
+merged_seu_GSE139324_PBMC$cell_type_L3 = as.character(merged_seu_GSE139324_PBMC$cell_type_L3)
+merged_seu_GSE139324_Tissue$cell_type_L3 = as.character(merged_seu_GSE139324_Tissue$cell_type_L3)
+merged_seu_GSE200996_PBMC$cell_type_L3 = as.character(merged_seu_GSE200996_PBMC$cell_type_L3)
+merged_seu_GSE200996_Tissue$cell_type_L3 = as.character(merged_seu_GSE200996_Tissue$cell_type_L3)
+
+
+included_cell_types <- c("Monocytes","CD8T","DC","NK","Thelp","NaiveB","MemoryB","PlasmaB","Tregs","Mast","Macrophages")
+merged_seu_GSE139324_PBMC <- subset(merged_seu_GSE139324_PBMC, subset = cell_type_L3 %in% included_cell_types)
+merged_seu_GSE139324_Tissue <- subset(merged_seu_GSE139324_Tissue, subset = cell_type_L3 %in% included_cell_types)
+
+included_cell_types <- c("Thelp","Monocytes","CD8T","NK","Tregs","DC","NaiveB","MemoryB","PlasmaB","Mast","Macrophages")
+merged_seu_GSE200996_PBMC <- subset(merged_seu_GSE200996_PBMC, subset = cell_type_L3 %in% included_cell_types)
+merged_seu_GSE200996_Tissue <- subset(merged_seu_GSE200996_Tissue, subset = cell_type_L3 %in% included_cell_types)
+
+original_cellnames1 = c("Monocytes","CD8T","DC","OtherT","NK","Thelp","NaiveB","MemoryB","PlasmaB","Tregs","Other","Mast","Macrophages","ABC","GCB","Neutrophils")
+short_cellnames = c("Monocytes","CD8T","DC","Other T","NK","Thelp","Naive B","Memory B","Plasma","Treg","Other","Mast","Macrophages","Other B","Other B","Neutrophils")
+name_mapping <- setNames(short_cellnames, original_cellnames1)
+merged_seu_GSE139324_PBMC$cell_type_L3 <- recode(merged_seu_GSE139324_PBMC$cell_type_L3, !!!name_mapping)
+merged_seu_GSE139324_Tissue$cell_type_L3 <- recode(merged_seu_GSE139324_Tissue$cell_type_L3, !!!name_mapping)
+
+
+original_cellnames2 = c("Thelp","Monocytes","CD8T","OtherT","NK","Other","Tregs","DC","NaiveB","ABC","MemoryB","PlasmaB","OtherB","Mast","ABC","Macrophages","GCB")
+short_cellnames = c("Thelp","Monocytes","CD8T","Other T","NK","Other","Treg","DC","Naive B","Other B","Memory B","Plasma","Other B","Mast","Other B","Macrophages","Other B")
+name_mapping <- setNames(short_cellnames, original_cellnames2)
+merged_seu_GSE200996_PBMC$cell_type_L3 <- recode(merged_seu_GSE200996_PBMC$cell_type_L3, !!!name_mapping)
+merged_seu_GSE200996_Tissue$cell_type_L3 <- recode(merged_seu_GSE200996_Tissue$cell_type_L3, !!!name_mapping)
+
+
+a1 = unique(merged_seu_GSE139324_PBMC$cell_type_L3)
+a2 = unique(merged_seu_GSE139324_Tissue$cell_type_L3)
+a3 = unique(merged_seu_GSE200996_PBMC$cell_type_L3)
+a4 = unique(merged_seu_GSE200996_Tissue$cell_type_L3)
+
+all_celltypes = unique(c(a1,a2,a3,a4))
+
+
+merged_seu_GSE139324_PBMC$cell_type_L3 = factor(merged_seu_GSE139324_PBMC$cell_type_L3, levels = all_celltypes)
+merged_seu_GSE139324_Tissue$cell_type_L3 = factor(merged_seu_GSE139324_Tissue$cell_type_L3, levels = all_celltypes)
+merged_seu_GSE200996_PBMC$cell_type_L3 = factor(merged_seu_GSE200996_PBMC$cell_type_L3, levels = all_celltypes)
+merged_seu_GSE200996_Tissue$cell_type_L3 = factor(merged_seu_GSE200996_Tissue$cell_type_L3, levels = all_celltypes)
+
+my.cols_map <- setNames(my.cols[1:length(all_celltypes)],
+                    all_celltypes)
+
+add_legend <- function(plot, cell_types, color_map) {
+  dummy_data <- data.frame(cell_type = factor(cell_types, levels = cell_types), x = 0, y = 0)
+  plot + 
+    geom_point(data = dummy_data, aes(x = x, y = y, color = cell_type), alpha = 0) +
+    scale_color_manual(values = color_map) +
+    guides(color = guide_legend(override.aes = list(alpha = 1)))
+}
+
+# Plot cell types
+p1 <- DimPlot(merged_seu_GSE139324_PBMC, group.by = "cell_type_L3", raster=FALSE)+
+  scale_color_manual(values = my.cols_map)+
+  ggtitle("")
+p1 <- add_legend(p1, all_celltypes, my.cols_map)
+ggsave(filename = paste0(fig_dir, "UMAP_GSE139324_PBMC_celltype.png"), plot = p1, height = 120*0.8, width = 150*0.8, dpi = 300, units = "mm")
+
+# Plot cell types
+p1 <- DimPlot(merged_seu_GSE139324_Tissue, group.by = "cell_type_L3", raster=FALSE)+
+  scale_color_manual(values = my.cols_map)+
+  ggtitle("")
+p1 <- add_legend(p1, all_celltypes, my.cols_map)
+ggsave(filename = paste0(fig_dir, "UMAP_GSE139324_Tissue_celltype.png"), plot = p1, height = 120*0.8, width = 150*0.8, dpi = 300, units = "mm")
+
+# Plot cell types
+p1 <- DimPlot(merged_seu_GSE200996_PBMC, group.by = "cell_type_L3", raster=FALSE)+
+  scale_color_manual(values = my.cols_map)+
+  ggtitle("")
+p1 <- add_legend(p1, all_celltypes, my.cols_map)
+ggsave(filename = paste0(fig_dir, "UMAP_GSE200996_PBMC_celltype.png"), plot = p1, height = 120*0.8, width = 150*0.8, dpi = 300, units = "mm")
+
+# Plot cell types
+p1 <- DimPlot(merged_seu_GSE200996_Tissue, group.by = "cell_type_L3", raster=FALSE)+
+  scale_color_manual(values = my.cols_map)+
+  ggtitle("")
+p1 <- add_legend(p1, all_celltypes, my.cols_map)
+ggsave(filename = paste0(fig_dir, "UMAP_GSE200996_Tissue_celltype.png"), plot = p1, height = 120*0.8, width = 150*0.8, dpi = 300, units = "mm")
+
+```
+

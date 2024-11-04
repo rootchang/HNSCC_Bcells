@@ -1,0 +1,256 @@
+---
+title: "Differentially expressed genes and enriched pathways in dendritic cells from B-high vs. B-low samples (Cohort6)"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Characterization of DEG and pathways of DC in B-high vs B-low tumors in Cohort6
+
+# load required package
+```{r, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+library(openxlsx)
+library(UCell)
+library(readxl)
+
+library(AnnotationDbi)
+library(org.Hs.eg.db) 
+library(ReactomePA)
+library(enrichplot)
+library(gridExtra)
+
+library(DESeq2)
+library(edgeR)
+library(clusterProfiler)
+
+library(tidyr)
+library(ggrepel)
+
+library(scales)
+
+```
+
+# parameters and constants
+```{r}
+logFC_filter = 0.1 
+return_thresh = 0.05 
+minPct_filter = 0.01 
+p_adj_cutoff = 1
+Bhigh_percentile = 0.5
+Blow_percentile = 0.5
+```
+
+
+# load .rds (GSE234933)
+```{r}
+
+dataset_name = 'GSE234933'
+data_dir <- "../02.Input/"
+result_dir <- "../03.Results/Data/"
+result_fig_dir <- "../03.Results/Figures/"
+data_dir <- paste0(data_dir, dataset_name, '/')
+seurat_suffix = 'Tissue'
+merged_seu_GSE234933 = readRDS(file = paste0(data_dir,"seu_",seurat_suffix,".rds"))
+
+```
+
+# identify Bhigh vs Blow tumors
+```{r}
+
+Bhigh_percentile = 0.5
+Blow_percentile = 0.5
+
+######## identify B-high (top 50%) and B-low (bottom 50%) tumors
+ICF_df = read.csv(file = paste0(data_dir,"Tissue_CellProportions_L2_L3_merged.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+B_high_samples = ICF_df$sample[ICF_df$B_cells > quantile(ICF_df$B_cells, Bhigh_percentile)]
+B_low_samples = ICF_df$sample[ICF_df$B_cells < quantile(ICF_df$B_cells, Blow_percentile)]
+
+
+subset_seu_GSE234933 = subset(merged_seu_GSE234933, subset = meta %in% c(B_high_samples,B_low_samples))
+subset_seu_GSE234933$Bhigh = 1
+subset_seu_GSE234933$Bhigh[subset_seu_GSE234933$sample %in% B_low_samples] = 0
+
+merged_seu_GSE234933 = subset_seu_GSE234933
+
+```
+
+
+
+# Find DEGs of DC
+```{r}
+
+# find marker genes in Bhigh and Blow tumors
+Idents(object = subset_seu_GSE234933) <- subset_seu_GSE234933$Bhigh
+cell_types_all = c("Dendritic_cells") 
+DEGs_Blow_GSE234933 = list()
+DEGs_Bhigh_GSE234933 = list()
+Cells.markers_Bhigh_vs_Blow_GSE234933 = list()
+for (ct in cell_types_all){
+  print(paste(ct, "in processing ..."))
+  subset_seu = subset(subset_seu_GSE234933, subset = cellType_origin_L2 == ct)
+  Idents(object = subset_seu) <- subset_seu@meta.data$Bhigh
+  Cells.markers_GSE234933 = FindAllMarkers(subset_seu, only.pos = T, min.pct=minPct_filter, logfc.threshold = logFC_filter, return.thresh = return_thresh)
+  if (isEmpty(Cells.markers_GSE234933)){
+    DEGs_Blow_GSE234933[[ct]] = c("")
+    DEGs_Bhigh_GSE234933[[ct]] = c("")
+  }else{
+    DEGs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==0 & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+    DEGs_Bhigh_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==1 & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+  }
+  Cells.markers_Bhigh_vs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933
+}
+
+```
+
+# Fig. S10B. DEG volcano plot
+```{r}
+
+Cells.markers_test = Cells.markers_Bhigh_vs_Blow_GSE234933[["Dendritic_cells"]]
+
+####### Create the volcano plot
+fc_cutoff = 0.25
+pval_cutoff = 0.05
+x_max = 2
+y_max = 200
+# Transform the results into a dataframe for plotting
+de_df <- as.data.frame(Cells.markers_test)
+de_df$avg_log2FC[de_df$cluster==0] = -de_df$avg_log2FC[de_df$cluster==0]
+de_df$gene_symbol = rownames(de_df)
+de_df$diffexpressed = "ns"
+de_df$diffexpressed[(de_df$avg_log2FC < -fc_cutoff) & (de_df$p_val_adj < pval_cutoff)] = "down"
+de_df$diffexpressed[(de_df$avg_log2FC > fc_cutoff) & (de_df$p_val_adj < pval_cutoff)] = "up"
+de_df_sig = de_df[de_df$diffexpressed != "ns",]
+
+de_df_up = de_df_sig[de_df_sig$avg_log2FC > 0,]
+de_df_down = de_df_sig[de_df_sig$avg_log2FC < 0,]
+
+top_up_genes = head(de_df_up[order(de_df_up$p_val_adj), "gene_symbol"], 10)
+top_down_genes = head(de_df_down[order(de_df_down$p_val_adj), "gene_symbol"], 5)
+
+
+label_genes = union(top_up_genes,top_down_genes)
+de_df$delabel <- ifelse(de_df$gene_symbol %in% label_genes, de_df$gene_symbol, NA)
+
+myvolcanoplot <- ggplot(data = de_df, aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) +
+  geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), col = "gray", linetype = 'dashed') +
+  geom_hline(yintercept = -log10(pval_cutoff), col = "gray", linetype = 'dashed') + 
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("#bb0c00", "grey", "#00AFBB"), 
+                     labels = c("", "", "")) + 
+  coord_cartesian(ylim = c(0.1, y_max), xlim = c(-x_max, x_max)) + 
+  labs(color = 'FC', #legend_title, 
+       x = expression("log"[2]*"FC"), y = expression("-log"[10]*"p-value")) + 
+  scale_x_continuous(breaks = seq(-x_max, x_max, x_max/2)) + 
+  scale_y_log10() + 
+  ggtitle('') + 
+  guides(col = "none") + 
+  geom_text_repel(max.overlaps = Inf, color = "black") + 
+  theme_set(theme_classic(base_size = 20) +
+              theme(
+                axis.title.y = element_text(face = "bold", margin = margin(0,20,0,0), size = rel(1.1), color = 'black'),
+                axis.title.x = element_text(hjust = 0.5, face = "bold", margin = margin(20,0,0,0), size = rel(1.1), color = 'black'),
+                plot.title = element_text(hjust = 0.5),
+                axis.text.x = element_text(color = "black"),
+                axis.text.y = element_text(color = "black"),
+                legend.position = "none"
+              ))
+
+pdf(file = paste0(result_fig_dir, "Volcano_plot_Bhigh_vs_Blow_GSE234933_DC.pdf"), width = 5, height = 5) 
+myvolcanoplot
+dev.off()
+
+```
+
+
+# extract Reactome pathways 
+```{r}
+
+p_adj_cutoff = 0.01
+FC_cutoff = 0.25 
+
+cell_type_all = c("Dendritic_cells")
+
+####### Bhigh vs Blow
+DEGs_Blow_GSE234933 = list()
+DEGs_Bhigh_GSE234933 = list()
+for (ct in cell_type_all){
+  print(paste(ct, "in processing ..."))
+  Cells.markers_GSE234933 = Cells.markers_Bhigh_vs_Blow_GSE234933[[ct]]
+  if (isEmpty(Cells.markers_GSE234933)){
+    DEGs_Blow_GSE234933[[ct]] = c("")
+    DEGs_Bhigh_GSE234933[[ct]] = c("")
+  }else{
+    DEGs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==0 & Cells.markers_GSE234933$avg_log2FC> FC_cutoff & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+    DEGs_Bhigh_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==1 & Cells.markers_GSE234933$avg_log2FC> FC_cutoff & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+  }
+}
+
+Cells.markers_Bhigh_list = DEGs_Bhigh_GSE234933[cell_type_all]
+Cells.markers_Blow_list = DEGs_Blow_GSE234933[cell_type_all]
+GSE234933_Bhigh_pathway_list = list()
+GSE234933_Bhigh_pathway_name_list = list()
+GSE234933_Blow_pathway_list = list()
+GSE234933_Blow_pathway_name_list = list()
+for (ct_i in 1:length(cell_type_all)){ 
+  ct = cell_type_all[ct_i]
+  print(paste(ct, "in processing..."))
+  Bhigh_genes = Cells.markers_Bhigh_list[[ct_i]]
+  Blow_genes = Cells.markers_Blow_list[[ct_i]]
+  Bhigh_genes_ids <- mapIds(org.Hs.eg.db, keys = Bhigh_genes, column = "ENTREZID", keytype = "SYMBOL")
+  Blow_genes_ids <- mapIds(org.Hs.eg.db, keys = Blow_genes, column = "ENTREZID", keytype = "SYMBOL")
+  ### reactome pathway
+  GSE234933_Bhigh_pathways <- enrichPathway(gene = Bhigh_genes_ids, organism = "human") 
+  GSE234933_Blow_pathways <- enrichPathway(gene = Blow_genes_ids, organism = "human") 
+  GSE234933_Bhigh_pathways_name = GSE234933_Bhigh_pathways$Description[1:nrow(GSE234933_Bhigh_pathways)]
+  GSE234933_Blow_pathways_name = GSE234933_Blow_pathways$Description[1:nrow(GSE234933_Blow_pathways)]
+  GSE234933_Bhigh_pathway_list[[ct]] = GSE234933_Bhigh_pathways
+  GSE234933_Blow_pathway_list[[ct]] = GSE234933_Blow_pathways
+  GSE234933_Bhigh_pathway_name_list[[ct]] = GSE234933_Bhigh_pathways_name
+  GSE234933_Blow_pathway_name_list[[ct]] = GSE234933_Blow_pathways_name
+}
+
+GSE234933_Bhigh_pathway_list_reactome = GSE234933_Bhigh_pathway_list
+GSE234933_Blow_pathway_list_reactome = GSE234933_Blow_pathway_list
+
+```
+
+
+# Fig. S10C. pathway enrichment plot
+```{r}
+
+test_cell_type = "Dendritic_cells" 
+
+Bhigh_pathway_enrich_result = GSE234933_Bhigh_pathway_list_reactome[[test_cell_type]]
+Blow_pathway_enrich_result = GSE234933_Blow_pathway_list_reactome[[test_cell_type]]
+# Arrange the plots side by side
+pdf(file = paste0(result_fig_dir, "Barplot_pathway_enrichment_",test_cell_type,"_reactome.pdf"), width = 12, height = 10*0.6) 
+p1 <- barplot(Bhigh_pathway_enrich_result, showCategory = 10,p.adjust.digits = 1)
+p2 <- barplot(Blow_pathway_enrich_result, showCategory = 10,p.adjust.digits = 1)
+grid.arrange(p1, p2, ncol = 2) + theme(axis.text.y = element_text(size = 12))
+dev.off()
+
+```

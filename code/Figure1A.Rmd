@@ -1,0 +1,101 @@
+---
+title: "Overview of data"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- generate pie charts with given proportion and label text for Figure 1A
+
+
+```{r}
+
+custom_colors = c("#1c4f27", "#81144e", "#79831e", "#00305d", "#C0C0C0", "#9c1915", "black", "#404040", "#808080", "#D3D3D3")
+result_fig_dir = "../03.Results/Figures/"
+
+# Data for the pie chart
+data_list = list()
+
+### TCGA
+data <- data.frame(
+  Category = c("HPV+ (n = 71)", "HPV- (n = 414)", "HPV unknown (n = 33)",  "Normal (n = 44)"),
+  Count = c(71, 414, 33, 44)
+)
+data_list[["Cohort1"]] = data
+
+### Cohort 2
+data <- data.frame(
+  Category = c("HPV+ (n = 11)", "HPV- (n = 49)", "HPV unknown (n = 42)"),
+  Count = c(11, 49, 42)
+)
+data_list[["Cohort2"]] = data
+
+### Cohort 6
+data <- data.frame(
+  Category = c("ICB; HPV+ (n = 4)", "ICB; HPV- (n = 10)", "Non-ICB; HPV+ (n = 11)", "Non-ICB; HPV- (n = 27)"),
+  Count = c(4, 10, 11, 27)
+)
+data_list[["Cohort6"]] = data
+
+### Cohort 8
+data <- data.frame(
+  Category = c("HPV+ (n = 8)", "HPV- (n = 18)"),
+  Count = c(8,18)
+)
+data_list[["Cohort8"]] = data
+
+### Cohort 10
+data <- data.frame(
+  Category = c("HPV+ (n = 13)", "HPV- (n = 21)"),
+  Count = c(13,21)
+)
+data_list[["Cohort10"]] = data
+
+### Cohort 11
+data <- data.frame(
+  Category = c("HPV+ (n = 4)", "HPV- (n = 13)", "HPV unknown (n = 43)"),
+  Count = c(4,13,43)
+)
+data_list[["Cohort11"]] = data
+
+
+test_cohort = "Cohort1" # Cohort1 Cohort2 Cohort6 Cohort8 Cohort10 Cohort11
+data = data_list[[test_cohort]]
+data$Category = factor(data$Category, levels = data$Category)
+
+# Create the pie chart
+fig_height = 2*0.4*3
+fig_width = 2*0.6*3
+
+
+pdf(file = paste0(result_fig_dir, "Figure1_piePlot_",test_cohort,".pdf"), 
+      height = fig_height , width = fig_width)
+ggplot(data, aes(x = "", y = Count, fill = Category)) +
+  geom_bar(stat = "identity", width = 1) +  
+  coord_polar(theta = "y") +  
+  scale_fill_manual(values = custom_colors) + 
+  theme_void() +  
+  theme(legend.position = "right"  
+        ) +    
+  guides(fill = guide_legend(ncol = 1, byrow = F)) +  
+  labs(title = "", fill = "")  
+dev.off()
+
+```

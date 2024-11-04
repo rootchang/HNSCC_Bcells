@@ -1,0 +1,1029 @@
+---
+title: "Peripheral blood B cell abundance predicts patient ICB response in HNSCC"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Study relationship between PBMC and tumor B cell abundance 
+- Test predictive power of PBMC B cell abundance for ICB response  
+
+
+# load required package
+```{r}
+
+library(survival)
+library(survminer)
+library(ggplot2)
+library(RColorBrewer)
+library(glmnet)
+library(rlang)
+library(pROC)
+library(verification)
+library(tibble)
+library(gridExtra)
+library(forestplot)
+
+library(dplyr)
+
+```
+
+# set the color scale
+```{r}
+
+custom_colors = c("#1c4f27", "#81144e", "#79831e", "#00305d", "#C0C0C0", "#9c1915", "black", "#404040", "#808080", "#D3D3D3")
+
+```
+
+# Set directories & parameters
+```{r}
+
+data_dir <- "../02.Input/"
+result_dir <- "../03.Results/Data/"
+result_fig_dir <- "../03.Results/Figures/"
+
+```
+
+# load data (bulk RNASeq)
+```{r}
+# estimated Cohort1 immune cell fractions (ICFs) by Kassandra
+TCGA_ICF_df = read.csv('../02.Input/TCGA/TCGA_HNC/HNSC_BG_deconvolution.tsv', header=TRUE, row.names = 1, sep = '\t')
+
+# estimated Cohort2 immune cell fractions (ICFs) by Kassandra
+GSE159067_ICF_df = read.csv('../02.Input/GSE159067/GSE159067_ICFs_Deconvolution_Kassandra_result.csv', header=TRUE, row.names = 1)
+
+# estimated Cohort3 immune cell fractions (ICFs) by Kassandra
+GSE93157_ICF_df = read.csv('../02.Input/GSE93157/HNSCC/GSE93157_ICFs_Deconvolution_Kassandra_result.csv', header=TRUE, row.names = 1)
+
+# estimated Cohort4 immune cell fractions (ICFs) by Kassandra
+NCT02296684_ICF_df = read.csv('../02.Input/NCT02296684/ICFs_Deconvolution_Kassandra_result.tsv', header=TRUE, row.names = 1, sep = "\t")
+
+
+```
+
+
+# load data (sc RNASeq)
+```{r}
+
+# Cohort6
+GSE234933_tumor_ICF_df = read.csv('../02.Input/GSE234933/GSE234933_Tissue_CellProportions_withTumorCells.csv', header=TRUE, row.names = 1) 
+
+# Cohort8
+GSE139324_tumor_ICF_df = read.csv('../02.Input/GSE139324/Tissue_CellProportions_L2.csv', header=TRUE, row.names = 1) 
+# Cohort8
+GSE139324_PBMC_ICF_df = read.csv('../02.Input/GSE139324/PBMC_CellProportions_L2.csv', header=TRUE, row.names = 1) 
+
+# Cohort7
+GSE200996_tumor_ICF_df = read.csv('../02.Input/GSE200996/GSE200996_Tissue_CellProportions_L2.csv', header=TRUE, row.names = 1) 
+# Cohort7
+GSE200996_PBMC_ICF_df = read.csv('../02.Input/GSE200996/GSE200996_PBMC_CellProportions_L2.csv', header=TRUE, row.names = 1) 
+GSE200996_PBMC_ICF_L3_df = read.csv('../02.Input/GSE200996/PBMC_CellProportions_L3.csv', header=TRUE, row.names = 1) 
+
+cor.test(GSE139324_PBMC_ICF_df$B, GSE139324_PBMC_ICF_df$B / (GSE139324_PBMC_ICF_df$B + GSE139324_PBMC_ICF_df$T_NK))
+
+# Cohort7 PBMC gene expr.
+GSE200996_PBMC_psuedoBulkAll_geneExpr_df = read.csv('../02.Input/GSE200996/GSE200996_pseudobulk_TPM_AllCells_PBMC.csv', header=TRUE, row.names = 1) 
+GSE200996_PBMC_psuedoBulkCD8T_geneExpr_df = read.csv('../02.Input/GSE200996/PBMC_pseudobulk_TPM_CD8T_L3.csv', header=TRUE, row.names = 1) 
+geneExpr_samples = colnames(GSE200996_PBMC_psuedoBulkAll_geneExpr_df)
+geneExpr_samples = sub(".B", "-B",geneExpr_samples)
+
+# clinical info.
+GSE200996_clinicalInfo_df = read.csv('../02.Input/GSE200996/GSE200996_PatientOutcome.csv', header=TRUE, row.names = 1)
+GSE200996_clinicalInfo_df$PatientID = rownames(GSE200996_clinicalInfo_df)
+GSE200996_clinicalInfo_df_new = GSE200996_clinicalInfo_df[c("PatientID","hpv_status","Tumorsite","PathologicalStage","PathologicalNode","Sex","Age","TobaccoUse","AlcoholUse")]
+GSE200996_clinicalInfo_df_new$OS_event = GSE200996_clinicalInfo_df$OS.event
+GSE200996_clinicalInfo_df_new$OS_time = GSE200996_clinicalInfo_df$Overall.Survival..days./30 # month
+GSE200996_clinicalInfo_df_new$PFS_event = GSE200996_clinicalInfo_df$PFS.event
+GSE200996_clinicalInfo_df_new$PFS_time = GSE200996_clinicalInfo_df$Progression.Free.Survival..days./30 # month
+
+GSE200996_clinicalInfo_df_new$RECIST_R = GSE200996_clinicalInfo_df[,'RECIST.response.excluding.non.measurable']
+GSE200996_clinicalInfo_df_new$RECIST_R[grepl('stable/progress', GSE200996_clinicalInfo_df_new$RECIST_R)] = 0
+GSE200996_clinicalInfo_df_new$RECIST_R[grepl('response', GSE200996_clinicalInfo_df_new$RECIST_R)] = 1
+GSE200996_clinicalInfo_df_new$RECIST_R[grepl('not measurable', GSE200996_clinicalInfo_df_new$RECIST_R)] = NA
+GSE200996_clinicalInfo_df_new$RECIST_R = as.numeric(GSE200996_clinicalInfo_df_new$RECIST_R)
+
+GSE200996_clinicalInfo_df_new$Patho_R = GSE200996_clinicalInfo_df[,'Pathological.response..'] 
+GSE200996_clinicalInfo_df_new$Patho_minR = (GSE200996_clinicalInfo_df_new$Patho_R>=10)+0
+
+GSE200996_clinicalInfo_df = GSE200996_clinicalInfo_df_new
+
+```
+
+# established ICB response biomarkers in Cohort7 PBMC 
+```{r}
+# B cell abundance
+GSE200996_PBMC_ICBsig_df = data.frame(B_cell = GSE200996_PBMC_ICF_df$B)
+rownames(GSE200996_PBMC_ICBsig_df) = rownames(GSE200996_PBMC_ICF_df)
+
+# CD8T/Treg
+GSE200996_PBMC_ICBsig_df$CD8T_2_Treg = GSE200996_PBMC_ICF_L3_df$CD8T/(GSE200996_PBMC_ICF_L3_df$Tregs + 0.000001)
+
+# monocyte-to-lymphocyte ratio
+GSE200996_PBMC_ICBsig_df$Mono_2_Lympho = (GSE200996_PBMC_ICF_df$Monocytes)/(GSE200996_PBMC_ICF_df$T_NK + GSE200996_PBMC_ICF_df$B)
+
+# Cyt
+cyt_genes = c("PRF1", "GZMA")
+GSE200996_PBMC_ICBsig_df$CYT =  as.numeric(colSums(log(GSE200996_PBMC_psuedoBulkAll_geneExpr_df[cyt_genes,]+1)))/length(cyt_genes)
+
+# Exh
+exh_genes = c("PDCD1", "CTLA4", "LAG3", "HAVCR2", "TIGIT")
+GSE200996_PBMC_ICBsig_df$EXH =  as.numeric(colSums(log(GSE200996_PBMC_psuedoBulkAll_geneExpr_df[exh_genes,]+1)))/length(exh_genes)
+
+# IFNr
+IFNr_genes = c("IDO1", "CXCL10", "CXCL9", "HLA-DRA", "STAT1", "IFNG")
+GSE200996_PBMC_ICBsig_df$IFNr = as.numeric(colSums(log(GSE200996_PBMC_psuedoBulkAll_geneExpr_df[IFNr_genes,]+1)))/length(IFNr_genes)
+
+# Tcell inf GEP
+IRG_genes = c("CD3D", "IDO1", "CIITA", "CD3E", "CCL5", "GZMK", "CD2", "HLA-DRA", "CXCL13", "IL2RG", "NKG7", "HLA-E", "CXCR6", "LAG3", "TAGAP", "CXCL10", "STAT1", "GZMB") # immune-related gene signature (Ayers 2017 JCI)
+GSE200996_PBMC_ICBsig_df$IRG = as.numeric(colSums(log(GSE200996_PBMC_psuedoBulkAll_geneExpr_df[IRG_genes,]+1)))/length(IRG_genes)
+
+# TLS
+TLS_genes = c("BCL6", "CD86", "CXCR4", "LAMP3", "SELL", "CCR7", "CXCL13", "CCL21", "CCL19")
+GSE200996_PBMC_ICBsig_df$TLS = as.numeric(colSums(log(GSE200996_PBMC_psuedoBulkAll_geneExpr_df[TLS_genes,]+1)))/length(TLS_genes)
+
+# KLRG1-PD1+CD8+T/PD1+CD8+T
+GSE200996_PBMCsig_df = read.csv('../02.Input/GSE200996/PBMC_cellProportion_ICB_signatures.csv', header=TRUE, row.names = 1)
+GSE200996_PBMC_ICBsig_df$KLRG1PD1CD8T = GSE200996_PBMCsig_df$KLRG1PD1CD8T_Ratio
+
+
+```
+
+
+# Figure 3B: correlation of B-to-immune cell ratio between PBMC and tumor for Cohort7
+```{r}
+
+all_info = GSE200996_tumor_ICF_df["B"]*100
+all_info$PatientID = rownames(all_info)
+all_info$PatientID <- sub("_pre_tumor$", "_pre", all_info$PatientID)
+all_info$PatientID <- sub("_post_tumor$", "_post", all_info$PatientID)
+colnames(all_info) = c("Tumor_B_ratio", "PatientID")
+
+all_info2 = GSE200996_PBMC_ICF_df["B"]*100
+all_info2$PatientID = rownames(all_info2)
+all_info2$PatientID <- sub("-B1$", "_pre", all_info2$PatientID)
+all_info2$PatientID <- sub("-B2$", "_post", all_info2$PatientID)
+colnames(all_info2) = c("PBMC_B_ratio", "PatientID")
+
+all_info = merge(all_info, all_info2, by = "PatientID", all.x = T)
+all_info = na.omit(all_info)
+
+pcc <- cor(all_info$Tumor_B_ratio, all_info$PBMC_B_ratio, method = "pearson")
+p_val <- cor.test(all_info$Tumor_B_ratio, all_info$PBMC_B_ratio, method = "pearson")$p.value
+label <- sprintf("r = %.2f\np = %.1g", pcc, p_val)
+
+# Create new data frame for predicted values and confidence intervals
+new_data <- data.frame(Tumor_B_ratio = seq(min(all_info$Tumor_B_ratio), max(all_info$Tumor_B_ratio), by = 0.1))
+predicted_values <- as.numeric(predict(lm(PBMC_B_ratio ~ Tumor_B_ratio, data = all_info), newdata = new_data))
+conf_interval <- predict(lm(PBMC_B_ratio ~ Tumor_B_ratio, data = all_info), newdata = new_data, interval = "confidence", level = 0.95)
+new_data$ymin <- conf_interval[, "lwr"]
+new_data$ymax <- conf_interval[, "upr"]
+new_data$PBMC_B_ratio = predicted_values
+
+pdf_file <- paste0(result_fig_dir,paste0("PBMC_vs_tumor_Bratio_corr_sc_GSE200996.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "Tumor (%)" # B-to-immune cell ratio 
+ylabel = "PBMC (%)" # B-to-immune cell ratio 
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(all_info, aes(x = Tumor_B_ratio, y = PBMC_B_ratio)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +  
+  geom_ribbon(data = new_data, aes(ymin = ymin, ymax = ymax), fill = "lightblue", alpha = 0.5) +
+  annotate(
+    geom = "text",
+    x = min(all_info$Tumor_B_ratio),
+    y = max(all_info$PBMC_B_ratio)*1.1,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  labs(x = xlabel, y = ylabel) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+
+dev.off()
+
+```
+
+# Figure 3C: correlation of B-to-immune cell ratio between PBMC and tumor for Cohort8
+```{r}
+
+all_info = GSE139324_tumor_ICF_df["B"]*100
+all_info$PatientID = rownames(all_info)
+all_info = all_info[6:nrow(all_info),]
+all_info$PatientID <- sub("_TIL$", "", all_info$PatientID)
+colnames(all_info) = c("Tumor_B_ratio", "PatientID")
+
+all_info2 = GSE139324_PBMC_ICF_df["B"]*100
+all_info2$PatientID = rownames(all_info2)
+all_info2 = all_info2[7:nrow(all_info2),]
+all_info2$PatientID <- sub("_PBMC$", "", all_info2$PatientID)
+colnames(all_info2) = c("PBMC_B_ratio", "PatientID")
+
+all_info = merge(all_info, all_info2, by = "PatientID", all.x = T)
+
+
+pdf_file <- paste0(result_fig_dir,paste0("PBMC_vs_tumor_Bratio_corr_sc_GSE139324.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "Tumor (%)" # B-to-immune cell ratio 
+ylabel = "PBMC (%)" # B-to-immune cell ratio 
+
+
+pcc <- cor(all_info$Tumor_B_ratio, all_info$PBMC_B_ratio, method = "pearson")
+p_val <- cor.test(all_info$Tumor_B_ratio, all_info$PBMC_B_ratio, method = "pearson")$p.value
+label <- sprintf("r = %.2f\np = %.1g", pcc, p_val)
+
+# Create new data frame for predicted values and confidence intervals
+new_data <- data.frame(Tumor_B_ratio = seq(min(all_info$Tumor_B_ratio), max(all_info$Tumor_B_ratio), by = 0.1))
+predicted_values <- as.numeric(predict(lm(PBMC_B_ratio ~ Tumor_B_ratio, data = all_info), newdata = new_data))
+conf_interval <- predict(lm(PBMC_B_ratio ~ Tumor_B_ratio, data = all_info), newdata = new_data, interval = "confidence", level = 0.95)
+new_data$ymin <- conf_interval[, "lwr"]
+new_data$ymax <- conf_interval[, "upr"]
+new_data$PBMC_B_ratio = predicted_values
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(all_info, aes(x = Tumor_B_ratio, y = PBMC_B_ratio)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +  
+  geom_ribbon(data = new_data, aes(ymin = ymin, ymax = ymax), fill = "lightblue", alpha = 0.5) +
+  annotate(
+    geom = "text",
+    x = min(all_info$Tumor_B_ratio),
+    y = max(all_info$PBMC_B_ratio)*1.1,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  labs(x = xlabel, y = ylabel) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+
+dev.off()
+
+```
+
+# Figure 3D: correlation between B-to-all cell ratio and B-to-immune cell ratio for TCGA-HNSCC (Cohort1)
+```{r}
+
+cellType_all = c('B_cells', 'T_cells', 'Macrophages', 'Monocytes', 'NK_cells', 'Neutrophils')
+columns_keep = cellType_all
+
+all_info = TCGA_ICF_df[columns_keep]
+all_info$B2I = as.numeric(all_info[[1]]/rowSums(all_info[1:6]) * 100)
+
+
+pdf_file <- paste0(result_fig_dir,paste0("B2all_vs_B2I_corr_TCGA_HNSCC.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "B-to-all cell ratio (%)"
+ylabel = "B-to-immune cell ratio (%)"
+
+
+pcc <- cor(all_info$B_cells, all_info$B2I, method = "pearson")
+p_val <- cor.test(all_info$B_cells, all_info$B2I, method = "pearson")$p.value
+label <- sprintf("r = %.2f\np = %.1g", pcc, p_val)
+
+# Create new data frame for predicted values and confidence intervals
+new_data <- data.frame(B_cells = seq(min(all_info$B_cells), max(all_info$B_cells), by = 0.1))
+predicted_values <- as.numeric(predict(lm(B2I ~ B_cells, data = all_info), newdata = new_data))
+conf_interval <- predict(lm(B2I ~ B_cells, data = all_info), newdata = new_data, interval = "confidence", level = 0.95)
+new_data$ymin <- conf_interval[, "lwr"]
+new_data$ymax <- conf_interval[, "upr"]
+new_data$B2I = predicted_values
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(all_info, aes(x = B_cells, y = B2I)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +  
+  geom_ribbon(data = new_data, aes(ymin = ymin, ymax = ymax), fill = "lightblue", alpha = 0.5) +
+  annotate(
+    geom = "text",
+    x = min(all_info$B_cells),
+    y = max(all_info$B2I)*1.1,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  labs(x = xlabel, y = ylabel) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+
+dev.off()
+
+```
+
+# Figure 3E: correlation between B-to-all cell ratio and B-to-immune cell ratio for merged HNSCC Cohorts2-4
+```{r}
+
+cellType_all = c('B_cells', 'T_cells', 'Macrophages', 'Monocytes', 'NK_cells', 'Neutrophils')
+columns_keep = cellType_all
+
+all_info = rbind(GSE159067_ICF_df[columns_keep], GSE93157_ICF_df[columns_keep], NCT02296684_ICF_df[columns_keep])
+all_info$B2I = as.numeric(all_info[[1]]/rowSums(all_info[1:6]) * 100)
+
+
+pdf_file <- paste0(result_fig_dir,paste0("B2all_vs_B2I_corr_bulk_ICBcohort.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "B-to-all cell ratio (%)"
+ylabel = "B-to-immune cell ratio (%)"
+
+
+pcc <- cor(all_info$B_cells, all_info$B2I, method = "pearson")
+p_val <- cor.test(all_info$B_cells, all_info$B2I, method = "pearson")$p.value
+label <- sprintf("r = %.2f\np = %.1g", pcc, p_val)
+
+# Create new data frame for predicted values and confidence intervals
+new_data <- data.frame(B_cells = seq(min(all_info$B_cells), max(all_info$B_cells), by = 0.1))
+predicted_values <- as.numeric(predict(lm(B2I ~ B_cells, data = all_info), newdata = new_data))
+conf_interval <- predict(lm(B2I ~ B_cells, data = all_info), newdata = new_data, interval = "confidence", level = 0.95)
+new_data$ymin <- conf_interval[, "lwr"]
+new_data$ymax <- conf_interval[, "upr"]
+new_data$B2I = predicted_values
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(all_info, aes(x = B_cells, y = B2I)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +  
+  geom_ribbon(data = new_data, aes(ymin = ymin, ymax = ymax), fill = "lightblue", alpha = 0.5) +
+  annotate(
+    geom = "text",
+    x = min(all_info$B_cells),
+    y = max(all_info$B2I)*0.9,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  labs(x = xlabel, y = ylabel) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+
+dev.off()
+
+```
+
+# Figure 3F: correlation between B-to-all cell ratio and B-to-immune cell ratio for GSE234933 (Cohort6)
+```{r}
+
+cellType_all = c('B_cells', 'T_NK_cells', 'Macrophages', 'Monocytes', 'Mast_cells', 'Neutrophils', 'Dendritic_cells')
+columns_keep = cellType_all
+
+all_info = GSE234933_tumor_ICF_df[columns_keep]
+all_info$B2I = as.numeric(all_info[[1]]/rowSums(all_info[1:7]) * 100)
+all_info$B_cells = all_info$B_cells * 100
+
+pdf_file <- paste0(result_fig_dir,paste0("B2all_vs_B2I_corr_sc_GSE234933.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "B-to-all cell ratio (%)"
+ylabel = "B-to-immune cell ratio (%)"
+
+
+pcc <- cor(all_info$B_cells, all_info$B2I, method = "pearson")
+p_val <- cor.test(all_info$B_cells, all_info$B2I, method = "pearson")$p.value
+label <- sprintf("r = %.2f\np = %.1g", pcc, p_val)
+
+# Create new data frame for predicted values and confidence intervals
+new_data <- data.frame(B_cells = seq(min(all_info$B_cells), max(all_info$B_cells), by = 0.1))
+predicted_values <- as.numeric(predict(lm(B2I ~ B_cells, data = all_info), newdata = new_data))
+conf_interval <- predict(lm(B2I ~ B_cells, data = all_info), newdata = new_data, interval = "confidence", level = 0.95)
+new_data$ymin <- conf_interval[, "lwr"]
+new_data$ymax <- conf_interval[, "upr"]
+new_data$B2I = predicted_values
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(all_info, aes(x = B_cells, y = B2I)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +  
+  geom_ribbon(data = new_data, aes(ymin = ymin, ymax = ymax), fill = "lightblue", alpha = 0.5) +
+  annotate(
+    geom = "text",
+    x = min(all_info$B_cells),
+    y = max(all_info$B2I)*0.9,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  labs(x = xlabel, y = ylabel) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+
+dev.off()
+
+```
+
+
+# Figure 3GH (left and middle panels). ROC and AUC of PBMC B cell abundance for predicting ICB response in GSE200996 (Cohort7)
+```{r}
+
+library(pROC)
+
+ICF_info = GSE200996_PBMC_ICF_df["B"]*100
+ICF_info$SampleID = rownames(ICF_info)
+ICF_info$PatientID = rownames(ICF_info)
+ICF_info$PatientID <- sub("-B1$", "", ICF_info$PatientID)
+ICF_info$PatientID <- sub("-B2$", "", ICF_info$PatientID)
+ICF_info$PatientID <- sub("-B3$", "", ICF_info$PatientID)
+colnames(ICF_info) = c("PBMC_B_ratio", "SampleID", "PatientID")
+
+all_info <- merge(ICF_info, GSE200996_clinicalInfo_df, by = "PatientID", all.x = T)
+
+cor.test(GSE200996_PBMC_ICF_df$B, GSE200996_PBMC_ICF_df$B/(GSE200996_PBMC_ICF_df$T_NK+GSE200996_PBMC_ICF_df$B))
+
+
+###### Figure 3f (left). ROC and AUC for RECIST_R (B1, B2, B3 timePt merged)
+plot_data = all_info[c("SampleID", "PBMC_B_ratio", "RECIST_R")]
+plot_data = na.omit(plot_data)
+
+Bratio_cutoff = 5.5
+odds_ratio = mean(plot_data$RECIST_R[plot_data$PBMC_B_ratio > Bratio_cutoff]) / mean(plot_data$RECIST_R[plot_data$PBMC_B_ratio <= Bratio_cutoff])
+
+
+# Calculate the ROC curve
+roc_obj <- roc(plot_data$RECIST_R, plot_data$PBMC_B_ratio)
+# Calculate the AUC with the 95% CI
+AUC_ci <- ci.auc(roc_obj)
+AUC = AUC_ci[2]
+AUC_low = AUC_ci[1]
+AUC_up = AUC_ci[3]
+# Calculate the p-value for the AUC
+p_val = roc.area(plot_data$RECIST_R, plot_data$PBMC_B_ratio)$p.value
+label <- sprintf("AUC = %.2f (%.2f,%.2f)\np = %.3f", AUC,AUC_low,AUC_up, p_val)
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_PBMC_Bratio_RECIST_ICBR_sc_GSE200996.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj$sensitivities, sensitivity=roc_obj$specificities), aes(x = 1 - specificity, y = sensitivity), color = "black", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = 0.17,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+
+
+###### Figure 3f (right). ROC and AUC for RECIST_R (B1, B2, B3 timePt separated)
+plot_data = all_info[c("SampleID", "PBMC_B_ratio", "RECIST_R")]
+plot_data = na.omit(plot_data)
+
+# Calculate the ROC curve for B1
+plot_data1 = plot_data[grepl("B1", plot_data$SampleID),]
+roc_obj1 <- roc(plot_data1$RECIST_R, plot_data1$PBMC_B_ratio)
+auc1 <- auc(roc_obj1)
+
+# Calculate the ROC curve for B1
+plot_data2 = plot_data[grepl("B2", plot_data$SampleID),]
+roc_obj2 <- roc(plot_data2$RECIST_R, plot_data2$PBMC_B_ratio)
+auc2 <- auc(roc_obj2)
+
+# Calculate the ROC curve for B1
+plot_data3 = plot_data[grepl("B3", plot_data$SampleID),]
+roc_obj3 <- roc(plot_data3$RECIST_R, plot_data3$PBMC_B_ratio)
+auc3 <- auc(roc_obj3)
+label <- sprintf("AUC (Pre) = %.2f \nAUC (Post) = %.2f\nAUC (Follow-up) = %.2f", auc1,auc2,auc3)
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_PBMC_Bratio_RECIST_ICBR_sc_GSE200996_B1B2B3.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj1$sensitivities, sensitivity=roc_obj1$specificities), aes(x = 1 - specificity, y = sensitivity), color = "#1c4f27", linetype = "solid", linewidth = 1) +
+  geom_line(data = data.frame(specificity=roc_obj2$sensitivities, sensitivity=roc_obj2$specificities), aes(x = 1 - specificity, y = sensitivity), color = "#81144e", linetype = "solid", linewidth = 1) +
+  geom_line(data = data.frame(specificity=roc_obj3$sensitivities, sensitivity=roc_obj3$specificities), aes(x = 1 - specificity, y = sensitivity), color = "#79831e", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = 0.3,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 3
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+
+
+
+###### Figure 3g (left). ROC and AUC for Patho_minR
+plot_data = all_info[c("SampleID", "PBMC_B_ratio", "Patho_minR")]
+plot_data = na.omit(plot_data)
+
+# Calculate the ROC curve
+roc_obj <- roc(plot_data$Patho_minR, plot_data$PBMC_B_ratio)
+# Calculate the AUC with the 95% CI
+AUC_ci <- ci.auc(roc_obj)
+AUC = AUC_ci[2]
+AUC_low = AUC_ci[1]
+AUC_up = AUC_ci[3]
+# Calculate the p-value for the AUC
+p_val = roc.area(plot_data$Patho_minR, plot_data$PBMC_B_ratio)$p.value
+label <- sprintf("AUC = %.2f (%.2f,%.2f)\np = %.3f", AUC,AUC_low,AUC_up, p_val)
+
+Bratio_cutoff = 5.5
+odds_ratio = mean(plot_data$Patho_minR[plot_data$PBMC_B_ratio > Bratio_cutoff]) / mean(plot_data$Patho_minR[plot_data$PBMC_B_ratio <= Bratio_cutoff])
+
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_PBMC_Bratio_Patho_minR_sc_GSE200996.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj$sensitivities, sensitivity=roc_obj$specificities), aes(x = 1 - specificity, y = sensitivity), color = "black", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = 0.17,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+
+
+
+###### Figure 3g (right). ROC and AUC for Patho_minR (B1, B2, B3 timePt separated)
+plot_data = all_info[c("SampleID", "PBMC_B_ratio", "Patho_minR")]
+plot_data = na.omit(plot_data)
+
+# Calculate the ROC curve for B1
+plot_data1 = plot_data[grepl("B1", plot_data$SampleID),]
+roc_obj1 <- roc(plot_data1$Patho_minR, plot_data1$PBMC_B_ratio)
+auc1 <- auc(roc_obj1)
+
+# Calculate the ROC curve for B1
+plot_data2 = plot_data[grepl("B2", plot_data$SampleID),]
+roc_obj2 <- roc(plot_data2$Patho_minR, plot_data2$PBMC_B_ratio)
+auc2 <- auc(roc_obj2)
+
+# Calculate the ROC curve for B1
+plot_data3 = plot_data[grepl("B3", plot_data$SampleID),]
+roc_obj3 <- roc(plot_data3$Patho_minR, plot_data3$PBMC_B_ratio)
+auc3 <- auc(roc_obj3)
+label <- sprintf("AUC (Pre) = %.2f \nAUC (Post) = %.2f\nAUC (Follow-up) = %.2f", auc1,auc2,auc3)
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_PBMC_Bratio_Patho_minR_sc_GSE200996_B1B2B3.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj1$sensitivities, sensitivity=roc_obj1$specificities), aes(x = 1 - specificity, y = sensitivity), color = "#1c4f27", linetype = "solid", linewidth = 1) +
+  geom_line(data = data.frame(specificity=roc_obj2$sensitivities, sensitivity=roc_obj2$specificities), aes(x = 1 - specificity, y = sensitivity), color = "#81144e", linetype = "solid", linewidth = 1) +
+  geom_line(data = data.frame(specificity=roc_obj3$sensitivities, sensitivity=roc_obj3$specificities), aes(x = 1 - specificity, y = sensitivity), color = "#79831e", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = 0.3,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 3
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+
+```
+
+# Figure 3GH (right panels; cutoff = 5.5%) and Figure S16GH (cutoff = 4%,5%,6%,7%). odds ratio of response rates by PBMC B ratio (Cohort7)
+```{r}
+
+test_phenotype = "RECIST_R" # "RECIST_R", "Patho_minR"
+
+# Define PBMC B ratio cutoff for Bhigh vs Blow
+cutoff <- 5.5 # 4,5,6,7 5.5
+
+all_info <- merge(ICF_info, GSE200996_clinicalInfo_df, by = "PatientID", all.x = T)
+data_df = all_info[c("SampleID", "PBMC_B_ratio", test_phenotype)]
+colnames(data_df) = c("SampleID", "PBMC_B_ratio", "Response")
+
+data_df = na.omit(data_df)
+
+# Divide into High and Low Groups
+data_df <- data_df %>%
+  mutate(B_group = ifelse(PBMC_B_ratio > cutoff, paste0("B > ",cutoff,"%"), paste0("B <= ",cutoff,"%"))) # ≤
+
+# Calculate Response Ratios
+response_ratios <- data_df %>%
+  group_by(B_group) %>%
+  summarise(response_rate = mean(Response) * 100)  # Calculate as percentage
+response_ratios$B_group = factor(response_ratios$B_group, levels = c(paste0("B <= ",cutoff,"%"), paste0("B > ",cutoff,"%")))
+
+# Perform Statistical Test (Chi-Square Test)
+contingency_table <- table(data_df$B_group, data_df$Response)
+chi_test <- chisq.test(contingency_table)
+
+# Barplot
+pdf_file <- paste0(result_fig_dir,paste0("OddsRatio_PBMC_Bratio_",test_phenotype,"_GSE200996.pdf"))
+fig_width = 1.6
+fig_height = 2.7
+fontSize = 1.2
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(response_ratios, aes(x = B_group, y = response_rate, fill = B_group)) +
+  geom_bar(stat = "identity") +
+  labs(x = "", y = "Response rate (%)", title = "") +
+  scale_fill_manual(values = c("#00305d", "#9c1915")) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color = "black", angle = 45, hjust = 1),  
+        panel.border = element_blank(), 
+        legend.position = "none"
+        )
+
+# Print contingency table and chi-test result
+print(contingency_table)
+print(chi_test)
+
+```
+
+
+# Figure 3I. Forest plot of AUC for ICB response (RECIST: left; Patho_min: right) prediction from other cell abundance in PBMC (Cohort7)
+```{r}
+
+Response_criteria = "Pathological" # Pathological    RECIST_R
+
+cellType_L2 = colnames(GSE200996_PBMC_ICF_df)[c(1:3, 5)]
+all_info = GSE200996_PBMC_ICF_df[cellType_L2]
+all_info$Lymphocytes = all_info$B + all_info$T_NK
+all_info$SampleID = rownames(all_info)
+
+cellType_L3 = colnames(GSE200996_PBMC_ICF_L3_df)[c(2,7,12,13)]
+all_info2 = GSE200996_PBMC_ICF_L3_df[cellType_L3]
+all_info2$T = all_info2$CD8T + all_info2$Thelp + all_info2$Tregs
+all_info2$SampleID = rownames(all_info2)
+
+all_info = merge(all_info, all_info2, by = "SampleID", x.all=T)
+all_info$PatientID = sub("-B1$|-B2$|-B3$", "", all_info$SampleID)
+
+if (Response_criteria == "Pathological"){
+  clinical_info = GSE200996_clinicalInfo_df[c("PatientID", "Patho_minR")] # Patho_minR    RECIST_R
+}else{
+  clinical_info = GSE200996_clinicalInfo_df[c("PatientID", "RECIST_R")] # Patho_minR    RECIST_R
+}
+
+all_info = merge(all_info, clinical_info, by = "PatientID", x.all=T)
+
+cellType_all = c("B cells", "Dendritic cells", "Monocytes", "T & NK cells", "Lymphocytes", "CD8+ T cells", "NK cells", "T helper cells", "Regulatory T cells", "T cells")
+colnames(all_info) = c("PatientID", "SampleID", cellType_all, "ICB_R")
+
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = all_info[c(cn, "ICB_R")]
+  colnames(cancerData) = c("CellType", "ICB_R")
+  logistic_model = glm(ICB_R ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$ICB_R,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICB_R,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+
+# rank AUCs
+if (Response_criteria == "RECIST_R"){
+  result_df <- result_df[order(-result_df$AUC), ]
+  sig_order = result_df$cellType
+}else{
+  result_df$cellType <- factor(result_df$cellType, levels = sig_order)
+  #  reorder the data frame based on the new factor
+  result_df <- result_df[order(result_df$cellType), ]
+}
+
+######### forest plot of AUC and p-value
+plot_data <- tibble::tibble(mean  = result_df[["AUC"]],
+                            lower = result_df[["AUC_low"]],
+                            upper = result_df[["AUC_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["AUC"]],3),
+                            pval = result_df[["p_val"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else if (pval>=0.001){
+    pval_vec[i] = as.character(round(pval,3))
+  }else if (pval>=0.0001){
+    pval_vec[i] = as.character(round(pval,4))
+  }else{
+    pval_vec[i] = '<0.0001'
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 1
+breaks_x = c(0,0.5,1)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_scGSE200996_ICBcohort_PBMC_ICF_AUC_",Response_criteria,".pdf"))
+fig_width = 4.9
+fig_height = 3.6
+fontSize = 1.2
+if (Response_criteria == "Pathological"){
+  xlabel = "AUC (Pathological)"
+}else{
+  xlabel = "AUC (RECIST)"
+}
+
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 0.5, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("AUC")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Cell type")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+
+
+```
+
+# Figure 3J. Forest plot of AUC for ICB response (RECIST: left; Patho_min: right) prediction from established biomarkers (in PBMC) (Cohort7)
+```{r}
+
+Response_criteria = "Pathological" # Pathological    RECIST_R
+
+all_info = GSE200996_PBMC_ICBsig_df
+all_info$SampleID = rownames(all_info)
+all_info$PatientID = sub("-B1$|-B2$|-B3$", "", all_info$SampleID)
+
+if (Response_criteria == "Pathological"){
+  clinical_info = GSE200996_clinicalInfo_df[c("PatientID", "Patho_minR")] # Patho_minR    RECIST_R
+}else{
+  clinical_info = GSE200996_clinicalInfo_df[c("PatientID", "RECIST_R")] # Patho_minR    RECIST_R
+}
+
+all_info = merge(all_info, clinical_info, by = "PatientID", x.all=T)
+
+cellType_all = c("B cells", "CD8T/Treg","Monocytes/Lymphocytes","Cyt","Exh","IFNr","Tcell inf GEP","TLS","KLRG1-PD1+CD8+T") 
+colnames(all_info) = c("PatientID", cellType_all,"SampleID", "ICB_R")
+
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = all_info[c(cn, "ICB_R")]
+  colnames(cancerData) = c("CellType", "ICB_R")
+  logistic_model = glm(ICB_R ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$ICB_R,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICB_R,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+
+# rank AUCs
+if (Response_criteria == "RECIST_R"){
+  result_df <- result_df[order(-result_df$AUC), ]
+  sig_order = result_df$cellType
+}else{
+  result_df$cellType <- factor(result_df$cellType, levels = sig_order)
+  # Now reorder the data frame based on the new factor
+  result_df <- result_df[order(result_df$cellType), ]
+}
+
+######### forest plot of AUC and p-value
+plot_data <- tibble::tibble(mean  = result_df[["AUC"]],
+                            lower = result_df[["AUC_low"]],
+                            upper = result_df[["AUC_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["AUC"]],3),
+                            pval = result_df[["p_val"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else if (pval>=0.001){
+    pval_vec[i] = as.character(round(pval,3))
+  }else if (pval>=0.0001){
+    pval_vec[i] = as.character(round(pval,4))
+  }else{
+    pval_vec[i] = '<0.0001'
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 1
+breaks_x = c(0,0.5,1)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_scGSE200996_ICBcohort_PBMC_ICBsig_AUC_",Response_criteria,".pdf"))
+fig_width = 5.5
+fig_height = 3.6
+fontSize = 1.2
+if (Response_criteria == "Pathological"){
+  xlabel = "AUC (Pathological)"
+}else{
+  xlabel = "AUC (RECIST)"
+}
+
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 0.5, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("AUC")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Signature")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+```
+

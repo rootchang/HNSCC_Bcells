@@ -1,0 +1,438 @@
+---
+title: "Total B cell abundance exhibits stronger predictive power than subtypes"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Study the additional questions (2): Could specific B cell subsets offer stronger predictive power compared to overall B cell abundance?
+
+
+# load required package
+```{r, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+
+library(pROC)
+library(verification)
+
+library(purrr)
+library(readr)
+library(readxl)
+library(survival)
+library(survminer)
+library(UCell)
+
+```
+
+# set color
+```{r}
+
+custom_colors = c("#1c4f27", "#81144e", "#79831e", "#00305d", "#C0C0C0", "#9c1915", "black", "#404040", "#808080", "#D3D3D3")
+
+```
+
+# set input and output directories & parameters
+```{r}
+
+result_fig_dir = "../03.Results/Figures/"
+
+```
+
+# common functions and constants
+```{r}
+
+signatures <- list(
+    Switched_UCell_sig = c("IGHA1", "IGHA2", "IGHG1","IGHG2","IGHG3","IGHG4"), 
+    Unswitched_UCell_sig = c("IGHD","IGHM")
+)
+
+```
+
+# Cohort6 test class-switched vs non-class-switched B cells on ICB response
+```{r}
+
+GSE234933_seu = readRDS("../02.Input/GSE234933/seu_Tissue.rds")
+GSE234933_seu <- AddModuleScore_UCell(GSE234933_seu, features=signatures, name=NULL)
+
+colnames(GSE234933_seu@meta.data)
+
+switched_indice = (GSE234933_seu$Switched_UCell_sig > GSE234933_seu$Unswitched_UCell_sig)
+Bcell_indice = (GSE234933_seu$cellType_origin_L2 == "B_cells")
+
+GSE234933_seu$Switched_B = (switched_indice & Bcell_indice)
+GSE234933_seu$Unswitched_B = (!(switched_indice) & Bcell_indice)
+
+# calculate ratios of Switched_B and Unswitched_B in each patient
+meta_data <- GSE234933_seu@meta.data
+ratios <- meta_data %>%
+  group_by(patient) %>%
+  summarise(
+    total_cells = n(),
+    B_cells = sum(cellType_origin_L2 == "B_cells"),
+    switched_cells = sum(Switched_B == 1),
+    unswitched_cells = sum(Unswitched_B == 1),
+    NaiveB_cells = sum(cellType_origin_L3 == "NaiveB"),
+    MemoryB_cells = sum(cellType_origin_L3 == "MemoryB"),
+    PlasmaB_cells = sum(cellType_origin_L3 == "PlasmaB"),
+    B_cells_ratio = B_cells / total_cells,
+    switched_ratio = switched_cells / total_cells,
+    unswitched_ratio = unswitched_cells / total_cells,
+    NaiveB_ratio = NaiveB_cells / total_cells,
+    MemoryB_ratio = MemoryB_cells / total_cells,
+    PlasmaB_ratio = PlasmaB_cells / total_cells
+  )
+
+write.csv(ratios, file = "../02.Input/GSE234933/B_cells_subgroup_ratios.csv")
+saveRDS(GSE234933_seu, "../02.Input/GSE234933/seu_Tissue.rds")
+
+
+## load B cell subgroup ratios
+Bratio_df = read.csv(file = "../02.Input/GSE234933/B_cells_subgroup_ratios.csv", row.names = 1)
+
+## load phenotype information
+GSE234933_clinicalInfo_df = read.csv('../02.Input/GSE234933/GSE234933_Clinical_Info.csv', header=TRUE, row.names = 1)
+GSE234933_clinicalInfo_df = na.omit(GSE234933_clinicalInfo_df)
+GSE234933_clinicalInfo_df$PatientID = rownames(GSE234933_clinicalInfo_df)
+GSE234933_clinicalInfo_df_new = GSE234933_clinicalInfo_df[c("PatientID","HPV.Status","Original.anatomic.site","Anatomic.location.of.scRNA.seq.specimen","Sex","Age","Smoking.history","ICB_response2")]
+colnames(GSE234933_clinicalInfo_df_new) = c("PatientID","hpv_status","Tumorsite","scRNAseq_loc","Sex","Age","TobaccoUse","ICB_R")
+
+# merge ICF info df with clinical info df
+GSE234933_clinicalInfo_df = GSE234933_clinicalInfo_df_new
+sampleNames = Bratio_df$patient
+GSE234933_all_info <- merge(GSE234933_clinicalInfo_df, Bratio_df, by.x = "PatientID",  by.y = "patient", all.x = T)
+
+## AUC calculation
+all_info = GSE234933_all_info
+cellType_all = c("B_cells_ratio", "switched_ratio", "unswitched_ratio", "NaiveB_ratio", "MemoryB_ratio", "PlasmaB_ratio")
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = all_info[c(cn, "ICB_R")]
+  colnames(cancerData) = c("CellType", "ICB_R")
+  logistic_model = glm(ICB_R ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$ICB_R,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICB_R,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+write.csv(result_df, "../02.Input/GSE234933/AUC_ICB_B_cell_subgroups.csv")
+
+
+```
+
+# Cohort7 (PBMC and tissue)  test class-switched vs non-class-switched B cells on ICB response
+```{r}
+
+Tissue = "PBMC" # Tissue PBMC
+
+GSE200996_seu = readRDS(paste0("../02.Input/GSE200996/seu_",Tissue,".rds"))
+GSE200996_seu <- AddModuleScore_UCell(GSE200996_seu, features=signatures, name=NULL)
+
+colnames(GSE200996_seu@meta.data)
+
+switched_indice = (GSE200996_seu$Switched_UCell_sig > GSE200996_seu$Unswitched_UCell_sig)
+Bcell_indice = (GSE200996_seu$cell_type_L2 == "B")
+
+GSE200996_seu$Switched_B = (switched_indice & Bcell_indice)
+GSE200996_seu$Unswitched_B = (!(switched_indice) & Bcell_indice)
+
+# calculate ratios of Switched_B and Unswitched_B in each patient
+meta_data <- GSE200996_seu@meta.data
+ratios <- meta_data %>%
+  group_by(patient) %>%
+  summarise(
+    total_cells = n(),
+    B_cells = sum(cell_type_L2 == "B"),
+    switched_cells = sum(Switched_B == 1),
+    unswitched_cells = sum(Unswitched_B == 1),
+    NaiveB_cells = sum(cell_type_L3 == "NaiveB"),
+    MemoryB_cells = sum(cell_type_L3 == "MemoryB"),
+    PlasmaB_cells = sum(cell_type_L3 == "PlasmaB"),
+    B_cells_ratio = B_cells / total_cells,
+    switched_ratio = switched_cells / total_cells,
+    unswitched_ratio = unswitched_cells / total_cells,
+    NaiveB_ratio = NaiveB_cells / total_cells,
+    MemoryB_ratio = MemoryB_cells / total_cells,
+    PlasmaB_ratio = PlasmaB_cells / total_cells
+  )
+
+write.csv(ratios, file = paste0("../02.Input/GSE200996/B_cells_subgroup_ratios_",Tissue,".csv"))
+saveRDS(GSE200996_seu, paste0("../02.Input/GSE200996/seu_",Tissue,".rds"))
+
+
+## load B cell subgroup ratios
+Bratio_df = read.csv(file = paste0("../02.Input/GSE200996/B_cells_subgroup_ratios_",Tissue,".csv"), row.names = 1)
+Bratio_df$PatientID = sub("-.*", "", Bratio_df$patient)
+
+## load phenotype information
+# clinical info.
+GSE200996_clinicalInfo_df = read.csv('../02.Input/GSE200996/GSE200996_PatientOutcome.csv', header=TRUE, row.names = 1)
+GSE200996_clinicalInfo_df$PatientID = rownames(GSE200996_clinicalInfo_df)
+GSE200996_clinicalInfo_df_new = GSE200996_clinicalInfo_df[c("PatientID","hpv_status","Tumorsite","PathologicalStage","PathologicalNode","Sex","Age","TobaccoUse","AlcoholUse")]
+GSE200996_clinicalInfo_df_new$RECIST_R = GSE200996_clinicalInfo_df[,'RECIST.response.excluding.non.measurable']
+GSE200996_clinicalInfo_df_new$RECIST_R[grepl('stable/progress', GSE200996_clinicalInfo_df_new$RECIST_R)] = 0
+GSE200996_clinicalInfo_df_new$RECIST_R[grepl('response', GSE200996_clinicalInfo_df_new$RECIST_R)] = 1
+GSE200996_clinicalInfo_df_new$RECIST_R[grepl('not measurable', GSE200996_clinicalInfo_df_new$RECIST_R)] = NA
+GSE200996_clinicalInfo_df_new$RECIST_R = as.numeric(GSE200996_clinicalInfo_df_new$RECIST_R)
+GSE200996_clinicalInfo_df_new$Patho_R = GSE200996_clinicalInfo_df[,'Pathological.response..'] 
+GSE200996_clinicalInfo_df_new$Patho_minR = (GSE200996_clinicalInfo_df_new$Patho_R>=10)+0
+
+# merge ICF info df with clinical info df
+GSE200996_clinicalInfo_df = GSE200996_clinicalInfo_df_new
+GSE200996_all_info <- merge(Bratio_df, GSE200996_clinicalInfo_df, by = "PatientID", all.x = T)
+
+## AUC calculation
+all_info = GSE200996_all_info
+cellType_all = c("B_cells_ratio", "switched_ratio", "unswitched_ratio", "NaiveB_ratio", "MemoryB_ratio", "PlasmaB_ratio")
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = all_info[c(cn, "RECIST_R")] # RECIST_R Patho_minR
+  colnames(cancerData) = c("CellType", "RECIST_R")
+  logistic_model = glm(RECIST_R ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$RECIST_R,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$RECIST_R,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+write.csv(result_df, paste0("../02.Input/GSE200996/AUC_ICB_B_cell_subgroups_",Tissue,"_RECIST_R.csv"))
+
+```
+
+# Cohort5 (scRNAseq) test class-switched vs non-class-switched B cells on ICB response
+```{r}
+
+GSE232240_seu = readRDS("../02.Input/GSE232240/seu_Tissue.rds")
+GSE232240_seu <- AddModuleScore_UCell(GSE232240_seu, features=signatures, name=NULL)
+
+colnames(GSE232240_seu@meta.data)
+GSE232240_seu$patient_time = paste(GSE232240_seu$patient, GSE232240_seu$timepoint, sep = "_")
+
+switched_indice = (GSE232240_seu$Switched_UCell_sig > GSE232240_seu$Unswitched_UCell_sig)
+Bcell_indice = (GSE232240_seu$cell_type == "B")
+
+GSE232240_seu$Switched_B = (switched_indice & Bcell_indice)
+GSE232240_seu$Unswitched_B = (!(switched_indice) & Bcell_indice)
+
+# calculate ratios of Switched_B and Unswitched_B in each patient
+meta_data <- GSE232240_seu@meta.data
+ratios <- meta_data %>%
+  group_by(patient_time) %>%
+  summarise(
+    total_cells = n(),
+    B_cells = sum(cell_type_L2 == "B"),
+    switched_cells = sum(Switched_B == 1),
+    unswitched_cells = sum(Unswitched_B == 1),
+    NaiveB_cells = sum(cell_type_L3 == "NaiveB"),
+    MemoryB_cells = sum(cell_type_L3 == "MemoryB"),
+    PlasmaB_cells = sum(cell_type_L3 == "PlasmaB"),
+    B_cells_ratio = B_cells / total_cells,
+    switched_ratio = switched_cells / total_cells,
+    unswitched_ratio = unswitched_cells / total_cells,
+    NaiveB_ratio = NaiveB_cells / total_cells,
+    MemoryB_ratio = MemoryB_cells / total_cells,
+    PlasmaB_ratio = PlasmaB_cells / total_cells
+  )
+
+write.csv(ratios, file = "../02.Input/GSE232240/B_cells_subgroup_ratios.csv")
+saveRDS(GSE232240_seu, "../02.Input/GSE232240/seu_Tissue.rds")
+
+
+## load B cell subgroup ratios
+Bratio_df = read.csv(file = "../02.Input/GSE232240/B_cells_subgroup_ratios.csv", row.names = 1)
+
+## load phenotype information
+clinical_info = read.csv(file = paste0("../02.Input/GSE232240/clinical_info.csv"), header = T)
+clinical_info$response[clinical_info$response=="NR"] = 0
+clinical_info$response[clinical_info$response=="RE"] = 1
+clinical_info = clinical_info[c("response", "meta")]
+clinical_info$response = as.numeric(clinical_info$response)
+
+# merge ICF info df with clinical info df
+GSE232240_clinicalInfo_df = clinical_info
+GSE232240_clinicalInfo_df
+GSE232240_all_info <- merge(GSE232240_clinicalInfo_df, Bratio_df, by.x = "meta",  by.y = "patient_time", all.x = T)
+
+## AUC calculation
+all_info = GSE232240_all_info
+cellType_all = c("B_cells_ratio", "switched_ratio", "unswitched_ratio", "NaiveB_ratio", "MemoryB_ratio", "PlasmaB_ratio")
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = all_info[c(cn, "response")]
+  colnames(cancerData) = c("CellType", "response")
+  logistic_model = glm(response ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$response,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$response,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+write.csv(result_df, "../02.Input/GSE232240/AUC_ICB_B_cell_subgroups.csv")
+
+
+```
+
+# Cohort11 test class-switched vs non-class-switched B cells on ICB response
+```{r}
+
+data_dir = "../02.Input/HNSCC-Amanda/"
+Amanda_flow_all_info <- read_excel(paste0(data_dir, "HNSCC ITx annotations all assays_v3_flow_arranged_20241004.xlsx"), sheet = "Sheet1")
+
+colnames(Amanda_flow_all_info)
+
+Amanda_flow_all_info = Amanda_flow_all_info[c(16, 17, 21, 177:186, 606)]
+
+Amanda_flow_all_info$ICBR = 0
+Amanda_flow_all_info$ICBR[Amanda_flow_all_info$BOR %in% c("CR", "PR")] = 1 
+
+cellType_all = c("B_cells_ratio", "switched_ratio", "unswitched_ratio", "NaiveB_ratio", "MemoryB_ratio", "PlasmaB_ratio")
+Amanda_flow_all_info$B_cells_ratio = Amanda_flow_all_info$`Flow B Cells count`/(Amanda_flow_all_info$`Flow Monocytes Count` + Amanda_flow_all_info$`Flow Lymphocytes Count`)
+Amanda_flow_all_info$NaiveB_ratio = Amanda_flow_all_info$`Flow B Cells Naive (CD21+CD27-) (% B Cells)`*Amanda_flow_all_info$Bratio/100
+Amanda_flow_all_info$PlasmaB_ratio = Amanda_flow_all_info$`Flow Plasmablasts (CD38++IgM-) (% B Cells)`*Amanda_flow_all_info$Bratio/100
+Amanda_flow_all_info$MemoryB_ratio = Amanda_flow_all_info$`Flow B Cells Memory (CD21+CD27+) (% B Cells)`*Amanda_flow_all_info$Bratio/100
+
+switchedB = Amanda_flow_all_info$`Flow Plasmablasts (CD38++IgM-) (% B Cells)` + Amanda_flow_all_info$`Flow B Cells Switched Memory (IgM/IgD-) (% B Cells)`
+unswitchedB = 100 - switchedB
+Amanda_flow_all_info$switched_ratio = switchedB*Amanda_flow_all_info$Bratio/100
+Amanda_flow_all_info$unswitched_ratio = unswitchedB*Amanda_flow_all_info$Bratio/100
+
+
+## AUC calculation
+all_info = Amanda_flow_all_info
+cellType_all = c("B_cells_ratio", "switched_ratio", "unswitched_ratio", "NaiveB_ratio", "MemoryB_ratio", "PlasmaB_ratio")
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = all_info[c(cn, "ICBR")]
+  colnames(cancerData) = c("CellType", "ICBR")
+  logistic_model = glm(ICBR ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$ICBR,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICBR,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+write.csv(result_df, "../02.Input/HNSCC-Amanda/AUC_ICB_B_cell_subgroups.csv")
+
+
+```
+
+#  Figure S7A. AUCs boxplot comparing B cells and different B subgroups
+```{r}
+
+
+GSE234933_result_df = read.csv("../02.Input/GSE234933/AUC_ICB_B_cell_subgroups.csv")
+
+GSE200996_Tissue_result_df = read.csv(paste0("../02.Input/GSE200996/AUC_ICB_B_cell_subgroups_Tissue_RECIST_R.csv"))
+
+GSE200996_PBMC_result_df = read.csv(paste0("../02.Input/GSE200996/AUC_ICB_B_cell_subgroups_PBMC_RECIST_R.csv"))
+
+GSE232240_result_df = read.csv("../02.Input/GSE232240/AUC_ICB_B_cell_subgroups.csv")
+
+Amanda_result_df = read.csv("../02.Input/HNSCC-Amanda/AUC_ICB_B_cell_subgroups.csv")
+
+
+merged_df <- bind_rows(
+  GSE234933_result_df %>% mutate(dataset = "Cohort6"),
+  GSE200996_Tissue_result_df %>% mutate(dataset = "Cohort7 (tissue)"),
+  GSE200996_PBMC_result_df %>% mutate(dataset = "Cohort7 (PBMC)"),
+  GSE232240_result_df %>% mutate(dataset = "Cohort5"),
+  Amanda_result_df %>% mutate(dataset = "Cohort11")
+)
+
+merged_df$dataset = factor(merged_df$dataset, levels = c("Cohort5", "Cohort6", "Cohort7 (tissue)", "Cohort7 (PBMC)", "Cohort11"))
+
+
+# Calculate the median AUC for each cellType and reorder the x-axis based on it
+merged_df <- merged_df %>%
+  group_by(cellType) %>%
+  mutate(median_AUC = median(AUC)) %>%
+  ungroup()
+
+merged_df$cellType[merged_df$cellType == "B_cells_ratio"] = "All B cells"
+merged_df$cellType[merged_df$cellType == "switched_ratio"] = "Class switched"
+merged_df$cellType[merged_df$cellType == "unswitched_ratio"] = "Non-class switched"
+merged_df$cellType[merged_df$cellType == "NaiveB_ratio"] = "Naive"
+merged_df$cellType[merged_df$cellType == "MemoryB_ratio"] = "Memory"
+merged_df$cellType[merged_df$cellType == "PlasmaB_ratio"] = "Plasma"
+
+# Create a boxplot with points colored by dataset and cellType ordered by median AUC
+fig_width = 4
+fig_height = 3.5
+fontSize = 1.2
+pdf_file <- paste0(result_fig_dir,paste0("B_and_subgroups_AUC.pdf"))
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(merged_df, aes(x = reorder(cellType, -median_AUC), y = AUC)) +
+  geom_boxplot(outlier.shape = NA) +  
+  geom_jitter(aes(color = dataset), width = 0.2, size = 2) +  
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        ) +
+  scale_color_manual(values = custom_colors) +
+  ylim(0, 1)+
+  labs(title = "", x = "", y = "AUC") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+dev.off()
+
+```
+

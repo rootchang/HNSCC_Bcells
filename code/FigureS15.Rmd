@@ -1,0 +1,558 @@
+---
+title: "Comparison of tumor microenvironment characteristics between B-high patients who respond to ICB therapy and those who do not"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Characterization of B-high responders versus B-high non-responders across multiple cohorts
+
+# load required package
+```{r, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+library(purrr)
+library(readr)
+
+library(ggpubr)
+
+```
+
+
+# common functions and constants
+```{r}
+
+gene_set_list <- list(
+  ER_phago_vacuolar = c("SEC61A1","CALR", "RAB7A", "LAMP1", "NPC1", "CYBB","CTSS","CTSB","CTSL"),
+  Hypoxia_Buffa = c("VEGFA", "SLC2A1", "PGAM1", "ENO1", "LDHA", "TPI1", "P4HA1", "MRPS17", "CDKN3", "ADM", "NDRG1", "TUBB6", "ALDOA", "MIF", "ACOT7", "MCTS1", "PSRC1", "PSMA7", "ANLN", "TUBA1B", "MAD2L2", "GPI", "TUBA1C", "MAP7D1", "DDIT4", "BNIP3", "C20orf20", "HIG2", "GAPDH", "MRPL13", "CHCHD2", "YKT6", "NP", "CORO1C", "SEC61G", "ANKRD37", "ESRP1", "PFKP", "SHCBP1", "CTSL2", "KIF20A", "SLC25A32", "UTP11L", "SLC16A1", "MRPL15", "KIF4A", "LRRC42", "PGK1", "HK2", "AK3L1", "CA9"),
+  MHCII_genes = c("HLA-DRA", "HLA-DRB1", "HLA-DMA", "HLA-DPA1", "HLA-DPB1", "HLA-DMB", "HLA-DQB1", "HLA-DQA1", "CIITA")
+)
+
+merged_signature_list = gene_set_list
+
+```
+
+#  load data (Cohort4)  
+```{r}
+
+### gene expression TPM
+NCT02296684_geneExp = read.table('../02.Input/NCT02296684/TPM.expression', header=TRUE, sep='\t')
+
+### calculate MHCII score, cross-presentation score, hypoxia score
+pseudobulk_mat = as.matrix(NCT02296684_geneExp)
+ssgsea_scores <- gsva(pseudobulk_mat, merged_signature_list, method = "ssgsea")
+ssgsea_scores = data.frame(t(ssgsea_scores))
+ssgsea_scores$SampleID = rownames(ssgsea_scores)
+cytosig_info = read.table(file = paste0("../02.Input/NCT02296684/cytosig_output.Zscore"), header = T, sep = "\t") 
+cytosig_info = data.frame(t(cytosig_info))
+colnames(cytosig_info) = paste0(colnames(cytosig_info), "_cytosig")
+cytosig_info$SampleID = rownames(cytosig_info)
+
+
+### estimated immune cell fractions (ICFs) by Kassandra
+NCT02296684_ICF_df = read.csv("../02.Input/NCT02296684/ICFs_Deconvolution_Kassandra_result.tsv",header=T, sep="\t",row.names = 1)
+NCT02296684_ICF_df = data.frame(t(NCT02296684_ICF_df))
+NCT02296684_ICF_df$PatientID = gsub("\\..*","",rownames(NCT02296684_ICF_df))
+NCT02296684_ICF_df$PatientID = gsub("X","",NCT02296684_ICF_df$PatientID)
+NCT02296684_ICF_df$PatientID = as.numeric(NCT02296684_ICF_df$PatientID)
+NCT02296684_ICF_df$SampleID = rownames(NCT02296684_ICF_df)
+# get DC abundance estimation from MCPcounter
+NCT02296684_ICF_df2<-deconvo_tme(eset = NCT02296684_geneExp, method = "mcpcounter") # mcpcounter cibersort
+NCT02296684_ICF_df2$SampleID = NCT02296684_ICF_df2$ID
+### clinical info.
+clinicInfo_NCT02296684 = read.csv('../02.Input/NCT02296684/phs001623_all_info.csv', header=TRUE, row.names = NULL)
+clinicInfo_NCT02296684 = clinicInfo_NCT02296684[c("Patient.ID", "Pathologic.response..Yes.No.")]
+colnames(clinicInfo_NCT02296684) = c("PatientID", "ICB_R")
+clinicInfo_NCT02296684$ICB_R[clinicInfo_NCT02296684$ICB_R %in% c("No")] = 0
+clinicInfo_NCT02296684$ICB_R[clinicInfo_NCT02296684$ICB_R=="Yes"] = 1
+clinicInfo_NCT02296684$ICB_R = as.numeric(clinicInfo_NCT02296684$ICB_R)
+clinicInfo_NCT02296684 <- clinicInfo_NCT02296684[!duplicated(clinicInfo_NCT02296684$PatientID), ]
+NCT02296684_all_info <- merge(NCT02296684_ICF_df, clinicInfo_NCT02296684, by = "PatientID", all.x = T)
+NCT02296684_all_info <- merge(NCT02296684_all_info, NCT02296684_ICF_df2, by = "SampleID", all.x = T)
+NCT02296684_all_info <- merge(NCT02296684_all_info, ssgsea_scores, by = "SampleID", all.x = T)
+NCT02296684_all_info <- merge(NCT02296684_all_info, cytosig_info, by = "SampleID", all.x = T)
+
+custom_order <- colnames(NCT02296684_geneExp)
+NCT02296684_all_info$SampleID <- factor(NCT02296684_all_info$SampleID, levels = custom_order)
+NCT02296684_all_info <- NCT02296684_all_info[order(NCT02296684_all_info$SampleID), ]
+NCT02296684_all_info$SampleID = as.character(NCT02296684_all_info$SampleID)
+
+NCT02296684_all_info$CXCL9 = as.numeric(NCT02296684_geneExp["CXCL9",])
+NCT02296684_all_info$SPP1 = as.numeric(NCT02296684_geneExp["SPP1",])
+NCT02296684_all_info$CXCL9_SPP1 = NCT02296684_all_info$CXCL9/(NCT02296684_all_info$SPP1+0.000001)
+NCT02296684_all_info$IGHM = as.numeric(NCT02296684_geneExp["IGHM",])
+
+NCT02296684_all_info$CD8T_Treg = NCT02296684_all_info$CD8_T_cells/(NCT02296684_all_info$Tregs + 0.000001)
+cyt_genes = c("PRF1", "GZMA")
+NCT02296684_all_info$CYT =  as.numeric(colSums(log(NCT02296684_geneExp[cyt_genes,]+1)))/2
+exh_genes = c("PDCD1", "CTLA4", "LAG3", "HAVCR2", "TIGIT")
+NCT02296684_all_info$EXH =  as.numeric(colSums(log(NCT02296684_geneExp[exh_genes,]+1)))/5
+IFNr_genes = c("IDO1", "CXCL10", "CXCL9", "HLA-DRA", "STAT1", "IFNG")  # IFN-gamma signature (Ayers 2017 JCI)
+NCT02296684_all_info$IFNr = as.numeric(colSums(log(NCT02296684_geneExp[IFNr_genes,]+1)))/6
+TLS_genes = c("BCL6", "CD86", "CXCR4", "LAMP3", "SELL", "CCR7", "CXCL13", "CCL21", "CCL19")
+NCT02296684_all_info$TLS = as.numeric(colSums(log(NCT02296684_geneExp[TLS_genes,]+1)))/9
+
+### get B-high NR patients
+plot_data = NCT02296684_all_info[c("B_cells", "ICB_R", "IGHM", "SampleID")]
+colnames(plot_data) = c("B cells", "ICB_R", "IGHM", "SampleID")
+cutoff = median(plot_data$`B cells`)
+plot_data$Bscore = ifelse(plot_data$`B cells` > cutoff, 1, 0)
+
+Bhigh_NR_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 0)]
+Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 1)]
+
+```
+
+# Figure S15A. Cohort4 (NCT02296684) compare Bhigh-NR vs Bhigh-R
+```{r}
+
+# phenotype info: 
+phenotype_df = NCT02296684_all_info[c("SampleID", "T_cells_MCPcounter", "NK_cells_MCPcounter", "Myeloid_dendritic_cells_MCPcounter", "ER_phago_vacuolar", "Hypoxia_Buffa", "MHCII_genes", "GMCSF_cytosig")]
+colnames(phenotype_df) = c("SampleID", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+
+# geneExp info: CXCL9 IFNG
+geneExp_df = log1p(NCT02296684_geneExp)
+geneExp_df_selected = geneExp_df[c("CXCL9", "IFNG", "IGHM"), ]
+geneExp_df_selected = data.frame(t(geneExp_df_selected))
+geneExp_df_selected$SampleID = rownames(geneExp_df_selected)
+
+all_info_df = merge(phenotype_df, geneExp_df_selected, by = "SampleID")
+all_info_df$sampleType = NA
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_NR_samples] = 0
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_R_samples] = 1
+all_info_df = all_info_df[!is.na(all_info_df$sampleType), ]
+
+test_gene_vec = c("CXCL9", "IFNG", "IGHM", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+for (test_gene in test_gene_vec) {
+  all_info <- all_info_df[c("sampleType", test_gene)]
+  colnames(all_info) <- c("sampleType", "test_gene_value")
+  pdf(file = paste0(result_fig_dir, "Box_NCT02296684_", test_gene, "_BhighR_vs_BhighNR.pdf"), 
+      height = 2.5, width = 2*0.7)
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(sampleType, levels = c(0, 1)), 
+                     y = test_gene_value, fill = factor(sampleType, levels = c(0, 1))), 
+                 outlier.shape = NA) +
+    geom_point(aes(x = sampleType + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), 
+                   y = test_gene_value)) +
+    scale_x_discrete(labels = c("0" = "Bhigh-NR", "1" = "Bhigh-R")) +
+    scale_fill_manual(values = c("#00305d", "#9c1915")) +
+    labs(x = "", y = paste0(test_gene, "")) +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 20, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+    stat_compare_means(method = "wilcox.test", aes(x = factor(sampleType, levels = c(0, 1)), y = test_gene_value), 
+                       label = "p.format", label.x.npc = "left", label.y = max(all_info$test_gene_value) * 1.15)+
+    ylim(NA, max(all_info$test_gene_value) * 1.2) 
+  print(p)
+  dev.off()
+}
+
+```
+
+
+# analysis in Cohort5 (scRNAseq)
+```{r}
+
+### gene expression TPM
+IMCISION_geneExp = read.csv("../02.Input/GSE232240/GSE232240_Tissue_pseudobulk_TPM_AllCells.txt", row.names = 1)
+colnames(IMCISION_geneExp) = gsub("\\.","_", colnames(IMCISION_geneExp))
+
+### calculate MHCII score, cross-presentation score, hypoxia score
+pseudobulk_mat = as.matrix(IMCISION_geneExp)
+ssgsea_scores <- gsva(pseudobulk_mat, merged_signature_list, method = "ssgsea")
+ssgsea_scores = data.frame(t(ssgsea_scores))
+ssgsea_scores$SampleID = rownames(ssgsea_scores)
+
+cytosig_info = read.table(file = paste0("../02.Input/GSE232240/cytosig_output.Zscore"), header = T, sep = "\t") 
+cytosig_info = data.frame(t(cytosig_info))
+colnames(cytosig_info) = paste0(colnames(cytosig_info), "_cytosig")
+cytosig_info$SampleID = gsub("\\.","_", rownames(cytosig_info))
+
+
+###  immune cell fractions (ICFs) from scRNAseq annotation
+IMCISION_ICF_df = read.csv("../02.Input/GSE232240/GSE232240_cellType_ratios.csv",header=T, row.names = 1)
+IMCISION_ICF_df$SampleID = IMCISION_ICF_df$patient_time
+IMCISION_ICF_df$B_cells = IMCISION_ICF_df$B_cells / IMCISION_ICF_df$total_cells * 100
+IMCISION_ICF_df$T_cells = IMCISION_ICF_df$T_cells / IMCISION_ICF_df$total_cells * 100
+IMCISION_ICF_df$NK_cells = IMCISION_ICF_df$NK_cells / IMCISION_ICF_df$total_cells * 100
+IMCISION_ICF_df$DC = IMCISION_ICF_df$DC / IMCISION_ICF_df$total_cells * 100
+
+### clinical info.
+clinicInfo_IMCISION = read.csv(file = paste0("../02.Input/GSE232240/clinical_info.csv"), header = T)
+clinicInfo_IMCISION = clinicInfo_IMCISION[c("meta", "response")]
+colnames(clinicInfo_IMCISION) = c("SampleID", "ICB_R")
+clinicInfo_IMCISION$ICB_R[clinicInfo_IMCISION$ICB_R %in% c("NR")] = 0
+clinicInfo_IMCISION$ICB_R[clinicInfo_IMCISION$ICB_R=="RE"] = 1
+clinicInfo_IMCISION$ICB_R = as.numeric(clinicInfo_IMCISION$ICB_R)
+IMCISION_all_info <- merge(IMCISION_ICF_df, clinicInfo_IMCISION, by = "SampleID", all.x = T)
+IMCISION_all_info <- merge(IMCISION_all_info, ssgsea_scores, by = "SampleID", all.x = T)
+IMCISION_all_info <- merge(IMCISION_all_info, cytosig_info, by = "SampleID", all.x = T)
+
+custom_order <- colnames(IMCISION_geneExp)
+IMCISION_all_info$SampleID <- factor(IMCISION_all_info$SampleID, levels = custom_order)
+IMCISION_all_info <- IMCISION_all_info[order(IMCISION_all_info$SampleID), ]
+IMCISION_all_info$SampleID = as.character(IMCISION_all_info$SampleID)
+
+IMCISION_all_info$CXCL9 = as.numeric(IMCISION_geneExp["CXCL9",])
+IMCISION_all_info$SPP1 = as.numeric(IMCISION_geneExp["SPP1",])
+IMCISION_all_info$CXCL9_SPP1 = IMCISION_all_info$CXCL9/(IMCISION_all_info$SPP1+0.000001)
+IMCISION_all_info$IGHM = as.numeric(IMCISION_geneExp["IGHM",])
+
+cyt_genes = c("PRF1", "GZMA")
+IMCISION_all_info$CYT =  as.numeric(colSums(log(IMCISION_geneExp[cyt_genes,]+1)))/2
+exh_genes = c("PDCD1", "CTLA4", "LAG3", "HAVCR2", "TIGIT")
+IMCISION_all_info$EXH =  as.numeric(colSums(log(IMCISION_geneExp[exh_genes,]+1)))/5
+IFNr_genes = c("IDO1", "CXCL10", "CXCL9", "HLA-DRA", "STAT1", "IFNG")  # IFN-gamma signature (Ayers 2017 JCI)
+IMCISION_all_info$IFNr = as.numeric(colSums(log(IMCISION_geneExp[IFNr_genes,]+1)))/6
+TLS_genes = c("BCL6", "CD86", "CXCR4", "LAMP3", "SELL", "CCR7", "CXCL13", "CCL21", "CCL19")
+IMCISION_all_info$TLS = as.numeric(colSums(log(IMCISION_geneExp[TLS_genes,]+1)))/9
+
+### get B-high NR patients
+plot_data = IMCISION_all_info[c("B_cells", "ICB_R", "IGHM", "SampleID")]
+colnames(plot_data) = c("B cells", "ICB_R", "IGHM", "SampleID")
+cutoff = median(plot_data$`B cells`)
+plot_data$Bscore = ifelse(plot_data$`B cells` > cutoff, 1, 0)
+
+Bhigh_NR_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 0)]
+Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 1)]
+
+```
+
+
+# Figure S15B. Cohort5 (scRNAseq) compare Bhigh-NR vs Bhigh-R
+```{r}
+
+# phenotype info: 
+phenotype_df = IMCISION_all_info[c("SampleID", "T_cells", "NK_cells", "DC", "ER_phago_vacuolar", "Hypoxia_Buffa", "MHCII_genes", "GMCSF_cytosig")]
+colnames(phenotype_df) = c("SampleID", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+
+# geneExp info: CXCL9 IFNG
+geneExp_df = log1p(IMCISION_geneExp)
+geneExp_df_selected = geneExp_df[c("CXCL9", "IFNG", "IGHM"), ]
+geneExp_df_selected = data.frame(t(geneExp_df_selected))
+geneExp_df_selected$SampleID = rownames(geneExp_df_selected)
+
+all_info_df = merge(phenotype_df, geneExp_df_selected, by = "SampleID")
+all_info_df$sampleType = NA
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_NR_samples] = 0
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_R_samples] = 1
+all_info_df = all_info_df[!is.na(all_info_df$sampleType), ]
+
+test_gene_vec = c("CXCL9", "IFNG", "IGHM", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+for (test_gene in test_gene_vec) {
+  all_info <- all_info_df[c("sampleType", test_gene)]
+  colnames(all_info) <- c("sampleType", "test_gene_value")
+  pdf(file = paste0(result_fig_dir, "Box_IMCISION_", test_gene, "_BhighR_vs_BhighNR.pdf"), 
+      height = 2.5, width = 2*0.7)
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(sampleType, levels = c(0, 1)), 
+                     y = test_gene_value, fill = factor(sampleType, levels = c(0, 1))), 
+                 outlier.shape = NA) +
+    geom_point(aes(x = sampleType + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), 
+                   y = test_gene_value)) +
+    scale_x_discrete(labels = c("0" = "Bhigh-NR", "1" = "Bhigh-R")) +
+    scale_fill_manual(values = c("#00305d", "#9c1915")) +
+    labs(x = "", y = paste0(test_gene, "")) +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 20, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+    stat_compare_means(method = "wilcox.test", aes(x = factor(sampleType, levels = c(0, 1)), y = test_gene_value), 
+                       label = "p.format", label.x.npc = "left", label.y = max(all_info$test_gene_value) * 1.15)+
+    ylim(NA, max(all_info$test_gene_value) * 1.2) 
+  print(p)
+  dev.off()
+}
+
+```
+
+
+# analysis in Cohort7 (PBMC)
+```{r}
+
+### gene expression TPM
+GSE200996_geneExp = read.csv("../02.Input/GSE200996/GSE200996_pseudobulk_TPM_AllCells_PBMC.csv", row.names = 1)
+colnames(GSE200996_geneExp) = gsub("\\.","-", colnames(GSE200996_geneExp))
+
+### calculate MHCII score, cross-presentation score, hypoxia score
+pseudobulk_mat = as.matrix(GSE200996_geneExp)
+ssgsea_scores <- gsva(pseudobulk_mat, merged_signature_list, method = "ssgsea")
+ssgsea_scores = data.frame(t(ssgsea_scores))
+ssgsea_scores$SampleID = rownames(ssgsea_scores)
+cytosig_info = read.table(file = paste0("../02.Input/GSE200996/PBMC_cytosig_output.Zscore"), header = T, sep = "\t") 
+cytosig_info = data.frame(t(cytosig_info))
+colnames(cytosig_info) = paste0(colnames(cytosig_info), "_cytosig")
+cytosig_info$SampleID = gsub("\\.","-", rownames(cytosig_info))
+
+
+###  immune cell fractions (ICFs) from scRNAseq annotation
+GSE200996_ICF_df0 = read.csv("../02.Input/GSE200996/GSE200996_PBMC_CellProportions_L2.csv",header=T, row.names = 1)
+GSE200996_ICF_df = read.csv("../02.Input/GSE200996/PBMC_CellProportions_L3.csv",header=T, row.names = 1)
+GSE200996_ICF_df$SampleID = rownames(GSE200996_ICF_df)
+GSE200996_ICF_df$PatientID = gsub("-.*", "", GSE200996_ICF_df$SampleID)
+GSE200996_ICF_df$B_cells = GSE200996_ICF_df0$B * 100
+GSE200996_ICF_df$T_cells = (GSE200996_ICF_df0$T_NK - GSE200996_ICF_df$NK) * 100
+GSE200996_ICF_df$NK_cells = GSE200996_ICF_df$NK * 100
+GSE200996_ICF_df$DC = GSE200996_ICF_df$DC * 100
+
+### clinical info.
+clinicInfo_GSE200996 = read.csv('../02.Input/GSE200996/GSE200996_PatientOutcome.csv', header=TRUE, row.names = 1)
+clinicInfo_GSE200996$PatientID = rownames(clinicInfo_GSE200996)
+clinicInfo_GSE200996$RECIST_R = clinicInfo_GSE200996[,'RECIST.response.excluding.non.measurable']
+clinicInfo_GSE200996$RECIST_R[grepl('stable/progress', clinicInfo_GSE200996$RECIST_R)] = 0
+clinicInfo_GSE200996$RECIST_R[grepl('response', clinicInfo_GSE200996$RECIST_R)] = 1
+clinicInfo_GSE200996$RECIST_R[grepl('not measurable', clinicInfo_GSE200996$RECIST_R)] = NA
+clinicInfo_GSE200996$RECIST_R = as.numeric(clinicInfo_GSE200996$RECIST_R)
+clinicInfo_GSE200996$Patho_R = clinicInfo_GSE200996[,'Pathological.response..'] 
+clinicInfo_GSE200996$Patho_minR = (clinicInfo_GSE200996$Patho_R>=10)+0
+clinicInfo_GSE200996 = clinicInfo_GSE200996[c("PatientID", "RECIST_R", "Patho_minR")]
+
+GSE200996_all_info <- merge(GSE200996_ICF_df, clinicInfo_GSE200996, by = "PatientID", all.x = T)
+GSE200996_all_info <- merge(GSE200996_all_info, ssgsea_scores, by = "SampleID", all.x = T)
+GSE200996_all_info <- merge(GSE200996_all_info, cytosig_info, by = "SampleID", all.x = T)
+
+custom_order <- colnames(GSE200996_geneExp)
+GSE200996_all_info$SampleID <- factor(GSE200996_all_info$SampleID, levels = custom_order)
+GSE200996_all_info <- GSE200996_all_info[order(GSE200996_all_info$SampleID), ]
+GSE200996_all_info$SampleID = as.character(GSE200996_all_info$SampleID)
+
+GSE200996_all_info$CXCL9 = as.numeric(GSE200996_geneExp["CXCL9",])
+GSE200996_all_info$SPP1 = as.numeric(GSE200996_geneExp["SPP1",])
+GSE200996_all_info$CXCL9_SPP1 = GSE200996_all_info$CXCL9/(GSE200996_all_info$SPP1+0.000001)
+GSE200996_all_info$IGHM = as.numeric(GSE200996_geneExp["IGHM",])
+
+cyt_genes = c("PRF1", "GZMA")
+GSE200996_all_info$CYT =  as.numeric(colSums(log(GSE200996_geneExp[cyt_genes,]+1)))/2
+exh_genes = c("PDCD1", "CTLA4", "LAG3", "HAVCR2", "TIGIT")
+GSE200996_all_info$EXH =  as.numeric(colSums(log(GSE200996_geneExp[exh_genes,]+1)))/5
+IFNr_genes = c("IDO1", "CXCL10", "CXCL9", "HLA-DRA", "STAT1", "IFNG")  # IFN-gamma signature (Ayers 2017 JCI)
+GSE200996_all_info$IFNr = as.numeric(colSums(log(GSE200996_geneExp[IFNr_genes,]+1)))/6
+TLS_genes = c("BCL6", "CD86", "CXCR4", "LAMP3", "SELL", "CCR7", "CXCL13", "CCL21", "CCL19")
+GSE200996_all_info$TLS = as.numeric(colSums(log(GSE200996_geneExp[TLS_genes,]+1)))/9
+
+### get B-high NR patients
+plot_data = GSE200996_all_info[c("B_cells", "Patho_minR", "IGHM", "SampleID")] # RECIST_R Patho_minR
+colnames(plot_data) = c("B cells", "ICB_R", "IGHM", "SampleID")
+cutoff = median(plot_data$`B cells`)
+plot_data$Bscore = ifelse(plot_data$`B cells` > cutoff, 1, 0)
+
+Bhigh_NR_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 0)]
+Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 1)]
+
+```
+
+
+# Figure S15C. Cohort7 (PBMC) compare Bhigh-NR vs Bhigh-R
+```{r}
+
+# phenotype info: 
+phenotype_df = GSE200996_all_info[c("SampleID", "T_cells", "NK_cells", "DC", "ER_phago_vacuolar", "Hypoxia_Buffa", "MHCII_genes", "GMCSF_cytosig")]
+colnames(phenotype_df) = c("SampleID", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+
+# geneExp info: CXCL9 IFNG
+geneExp_df = log1p(GSE200996_geneExp)
+geneExp_df_selected = geneExp_df[c("CXCL9", "IFNG", "IGHM"), ]
+geneExp_df_selected = data.frame(t(geneExp_df_selected))
+geneExp_df_selected$SampleID = rownames(geneExp_df_selected)
+
+all_info_df = merge(phenotype_df, geneExp_df_selected, by = "SampleID")
+all_info_df$sampleType = NA
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_NR_samples] = 0
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_R_samples] = 1
+all_info_df = all_info_df[!is.na(all_info_df$sampleType), ]
+
+test_gene_vec = c("CXCL9", "IFNG", "IGHM", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+for (test_gene in test_gene_vec) {
+  all_info <- all_info_df[c("sampleType", test_gene)]
+  colnames(all_info) <- c("sampleType", "test_gene_value")
+  pdf(file = paste0(result_fig_dir, "Box_GSE200996_", test_gene, "_BhighR_vs_BhighNR.pdf"), 
+      height = 2.5, width = 2*0.7)
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(sampleType, levels = c(0, 1)), 
+                     y = test_gene_value, fill = factor(sampleType, levels = c(0, 1))), 
+                 outlier.shape = NA) +
+    geom_point(aes(x = sampleType + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), 
+                   y = test_gene_value)) +
+    scale_x_discrete(labels = c("0" = "Bhigh-NR", "1" = "Bhigh-R")) +
+    scale_fill_manual(values = c("#00305d", "#9c1915")) +
+    labs(x = "", y = paste0(test_gene, "")) +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 20, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+    stat_compare_means(method = "wilcox.test", aes(x = factor(sampleType, levels = c(0, 1)), y = test_gene_value), 
+                       label = "p.format", label.x.npc = "left", label.y = max(all_info$test_gene_value) * 1.15)+
+    ylim(NA, max(all_info$test_gene_value) * 1.2) 
+  print(p)
+  dev.off()
+}
+
+```
+
+# analysis in Cohort10
+```{r}
+
+### gene expression TPM
+Morris_geneExp = read.csv(file = "../02.Input/HNSCC-Luc-bulkRNAseq/Morris.HNIO.Sample.hg19KnownGene.tpm.csv", header = T, row.names = 1)
+gene_symbols = mapIds(x = org.Hs.eg.db,
+                                  keys=rownames(Morris_geneExp),
+                                  keytype="ENTREZID",
+                                  column="SYMBOL",
+                                  multiVals="first")
+Morris_geneExp$geneSymbol = gene_symbols
+Morris_geneExp$geneSymbol[is.na(Morris_geneExp$geneSymbol)] = rownames(Morris_geneExp)[is.na(Morris_geneExp$geneSymbol)]
+Morris_geneExp = Morris_geneExp[!duplicated(Morris_geneExp$geneSymbol),]
+rownames(Morris_geneExp) = Morris_geneExp$geneSymbol
+Morris_geneExp$geneSymbol = NULL
+
+### calculate MHCII score, cross-presentation score, hypoxia score
+pseudobulk_mat = as.matrix(Morris_geneExp)
+ssgsea_scores <- gsva(pseudobulk_mat, merged_signature_list, method = "ssgsea")
+ssgsea_scores = data.frame(t(ssgsea_scores))
+ssgsea_scores$SampleID = rownames(ssgsea_scores)
+cytosig_info = read.table(file = paste0("../02.Input/HNSCC-Luc-bulkRNAseq/cytosig_output.Zscore"), header = T, sep = "\t") 
+cytosig_info = data.frame(t(cytosig_info))
+colnames(cytosig_info) = paste0(colnames(cytosig_info), "_cytosig")
+cytosig_info$SampleID = rownames(cytosig_info)
+
+
+### estimated immune cell fractions (ICFs) by Kassandra
+Morris_ICF_df = Morris_Kassandra_cellRatio_df = read.csv("/Users/changt7/Documents/00.PostDocWork/CancerResearch/01.Projects/07.BcellAbundance_HNSCC_ICB_project/02.Input/HNSCC-Luc-bulkRNAseq/Morris_Kassandra_deconvolution_result.csv", row.names = 1)
+Morris_ICF_df$SampleID = rownames(Morris_ICF_df)
+# get DC abundance estimation from MCPcounter
+Morris_ICF_df2<-deconvo_tme(eset = Morris_geneExp, method = "mcpcounter") # mcpcounter cibersort
+Morris_ICF_df2$SampleID = Morris_ICF_df2$ID
+### clinical info.
+clinicInfo_Morris = read.xlsx("../02.Input/HNSCC-Luc-bulkRNAseq/HN_preIO_RNAseq_Clinical data for nci.xlsx", sheet = "HN_Illumina.Sample_Info")
+clinicInfo_Morris$ICB_R = 0
+clinicInfo_Morris$ICB_R[clinicInfo_Morris$BEST_RESPONSE %in% c("CR", "PR")] = 1
+clinicInfo_Morris$SampleID = clinicInfo_Morris$Sample
+
+Morris_all_info <- merge(Morris_ICF_df, clinicInfo_Morris, by = "SampleID", all.x = T)
+Morris_all_info <- merge(Morris_all_info, Morris_ICF_df2, by = "SampleID", all.x = T)
+Morris_all_info <- merge(Morris_all_info, ssgsea_scores, by = "SampleID", all.x = T)
+Morris_all_info <- merge(Morris_all_info, cytosig_info, by = "SampleID", all.x = T)
+
+custom_order <- colnames(Morris_geneExp)
+Morris_all_info$SampleID <- factor(Morris_all_info$SampleID, levels = custom_order)
+Morris_all_info <- Morris_all_info[order(Morris_all_info$SampleID), ]
+Morris_all_info$SampleID = as.character(Morris_all_info$SampleID)
+
+Morris_all_info$CXCL9 = as.numeric(Morris_geneExp["CXCL9",])
+Morris_all_info$SPP1 = as.numeric(Morris_geneExp["SPP1",])
+Morris_all_info$CXCL9_SPP1 = Morris_all_info$CXCL9/(Morris_all_info$SPP1+0.000001)
+Morris_all_info$IGHM = as.numeric(Morris_geneExp["IGHM",])
+
+cyt_genes = c("PRF1", "GZMA")
+Morris_all_info$CYT =  as.numeric(colSums(log(Morris_geneExp[cyt_genes,]+1)))/2
+exh_genes = c("PDCD1", "CTLA4", "LAG3", "HAVCR2", "TIGIT")
+Morris_all_info$EXH =  as.numeric(colSums(log(Morris_geneExp[exh_genes,]+1)))/5
+IFNr_genes = c("IDO1", "CXCL10", "CXCL9", "HLA-DRA", "STAT1", "IFNG")  # IFN-gamma signature (Ayers 2017 JCI)
+Morris_all_info$IFNr = as.numeric(colSums(log(Morris_geneExp[IFNr_genes,]+1)))/6
+TLS_genes = c("BCL6", "CD86", "CXCR4", "LAMP3", "SELL", "CCR7", "CXCL13", "CCL21", "CCL19")
+Morris_all_info$TLS = as.numeric(colSums(log(Morris_geneExp[TLS_genes,]+1)))/9
+
+### get B-high NR patients
+plot_data = Morris_all_info[c("B_cells", "ICB_R", "IGHM", "SampleID")]
+colnames(plot_data) = c("B cells", "ICB_R", "IGHM", "SampleID")
+cutoff = median(plot_data$`B cells`)
+plot_data$Bscore = ifelse(plot_data$`B cells` > cutoff, 1, 0)
+
+Bhigh_NR_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 0)]
+Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data$ICB_R == 1)]
+
+```
+
+# Figure S15D. Cohort10 compare Bhigh-NR vs Bhigh-R
+```{r}
+
+# phenotype info: 
+phenotype_df = Morris_all_info[c("SampleID", "T_cells_MCPcounter", "NK_cells_MCPcounter", "Myeloid_dendritic_cells_MCPcounter", "ER_phago_vacuolar", "Hypoxia_Buffa", "MHCII_genes", "GMCSF_cytosig")]
+colnames(phenotype_df) = c("SampleID", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+
+# geneExp info: CXCL9 IFNG
+geneExp_df = log1p(Morris_geneExp)
+geneExp_df_selected = geneExp_df[c("CXCL9", "IFNG", "IGHM"), ]
+geneExp_df_selected = data.frame(t(geneExp_df_selected))
+geneExp_df_selected$SampleID = rownames(geneExp_df_selected)
+
+all_info_df = merge(phenotype_df, geneExp_df_selected, by = "SampleID")
+all_info_df$sampleType = NA
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_NR_samples] = 0
+all_info_df$sampleType[all_info_df$SampleID %in% Bhigh_R_samples] = 1
+all_info_df = all_info_df[!is.na(all_info_df$sampleType), ]
+
+test_gene_vec = c("CXCL9", "IFNG", "IGHM", "T cells", "NK cells", "Dendritic cells", "Cross-presentation\nscore", "Hypoxias score", "MHCII score", "GMCSF score")
+for (test_gene in test_gene_vec) {
+  all_info <- all_info_df[c("sampleType", test_gene)]
+  colnames(all_info) <- c("sampleType", "test_gene_value")
+  pdf(file = paste0(result_fig_dir, "Box_Morris_", test_gene, "_BhighR_vs_BhighNR.pdf"), 
+      height = 2.5, width = 2*0.7)
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(sampleType, levels = c(0, 1)), 
+                     y = test_gene_value, fill = factor(sampleType, levels = c(0, 1))), 
+                 outlier.shape = NA) +
+    geom_point(aes(x = sampleType + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), 
+                   y = test_gene_value)) +
+    scale_x_discrete(labels = c("0" = "Bhigh-NR", "1" = "Bhigh-R")) +
+    scale_fill_manual(values = c("#00305d", "#9c1915")) +
+    labs(x = "", y = paste0(test_gene, "")) +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 20, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+    stat_compare_means(method = "wilcox.test", aes(x = factor(sampleType, levels = c(0, 1)), y = test_gene_value), 
+                       label = "p.format", label.x.npc = "left", label.y = max(all_info$test_gene_value) * 1.15)+
+    ylim(NA, max(all_info$test_gene_value) * 1.2) 
+  print(p)
+  dev.off()
+}
+
+```
+

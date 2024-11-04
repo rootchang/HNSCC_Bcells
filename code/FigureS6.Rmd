@@ -1,0 +1,183 @@
+---
+title: "Comparison of patient response rates with high versus low B cell abundance measured from PBMC or tumor tissue"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Study the additional questions (1): Among patients with discordant B cell abundance between tumor and blood, which source better predicted ICB response?
+
+
+```{r, include=FALSE}
+# load required package
+
+library(dplyr)
+library(ggplot2)
+
+library(pROC)
+library(verification)
+
+library(purrr)
+library(readr)
+
+library(ggpubr)
+
+```
+
+# set color
+```{r}
+
+custom_colors = c("#1c4f27", "#81144e", "#79831e", "#00305d", "#C0C0C0", "#9c1915", "black", "#404040", "#808080", "#D3D3D3")
+
+```
+
+# common functions and constants
+```{r}
+
+result_fig_dir = "../03.Results/Figures/"
+
+```
+
+# Figure S6A. analysis in Cohort7
+```{r}
+
+response_type = "RECIST_R"  # Patho_minR RECIST_R
+
+###  immune cell fractions (ICFs) from scRNAseq annotation
+GSE200996_ICF_df_PBMC = read.csv("../02.Input/GSE200996/GSE200996_PBMC_CellProportions_L2.csv",header=T, row.names = 1)
+GSE200996_ICF_df_PBMC$SampleID = rownames(GSE200996_ICF_df_PBMC)
+GSE200996_ICF_df_PBMC$PatientID = gsub("-.*", "", GSE200996_ICF_df_PBMC$SampleID)
+GSE200996_ICF_df_PBMC = GSE200996_ICF_df_PBMC[!grepl("B3", GSE200996_ICF_df_PBMC$SampleID),]
+GSE200996_ICF_df_PBMC$SampleID[grepl("B1", GSE200996_ICF_df_PBMC$SampleID)] = paste0(GSE200996_ICF_df_PBMC$PatientID[grepl("B1", GSE200996_ICF_df_PBMC$SampleID)], "_pre")
+GSE200996_ICF_df_PBMC$SampleID[grepl("B2", GSE200996_ICF_df_PBMC$SampleID)] = paste0(GSE200996_ICF_df_PBMC$PatientID[grepl("B2", GSE200996_ICF_df_PBMC$SampleID)], "_post")
+GSE200996_ICF_df_tumor = read.csv("../02.Input/GSE200996/GSE200996_Tissue_CellProportions_L2.csv",header=T, row.names = 1)
+GSE200996_ICF_df_tumor$SampleID = rownames(GSE200996_ICF_df_tumor)
+GSE200996_ICF_df_tumor$SampleID = gsub("_tumor", "", GSE200996_ICF_df_tumor$SampleID)
+
+GSE200996_ICF_df = GSE200996_ICF_df_PBMC[c("SampleID", "B")]
+GSE200996_ICF_df$B_cells_PBMC = GSE200996_ICF_df$B * 100
+GSE200996_ICF_df$B = NULL
+GSE200996_ICF_df <- merge(GSE200996_ICF_df, GSE200996_ICF_df_tumor[c("SampleID", "B")], by = "SampleID", all.x = T)
+colnames(GSE200996_ICF_df) = c("SampleID", "B_cells_PBMC", "B_cells_Tissue")
+GSE200996_ICF_df$PatientID = gsub("_.*", "", GSE200996_ICF_df$SampleID)
+
+### clinical info.
+clinicInfo_GSE200996 = read.csv('../02.Input/GSE200996/GSE200996_PatientOutcome.csv', header=TRUE, row.names = 1)
+clinicInfo_GSE200996$PatientID = rownames(clinicInfo_GSE200996)
+clinicInfo_GSE200996$RECIST_R = clinicInfo_GSE200996[,'RECIST.response.excluding.non.measurable']
+clinicInfo_GSE200996$RECIST_R[grepl('stable/progress', clinicInfo_GSE200996$RECIST_R)] = 0
+clinicInfo_GSE200996$RECIST_R[grepl('response', clinicInfo_GSE200996$RECIST_R)] = 1
+clinicInfo_GSE200996$RECIST_R[grepl('not measurable', clinicInfo_GSE200996$RECIST_R)] = NA
+clinicInfo_GSE200996$RECIST_R = as.numeric(clinicInfo_GSE200996$RECIST_R)
+clinicInfo_GSE200996$Patho_R = clinicInfo_GSE200996[,'Pathological.response..'] 
+clinicInfo_GSE200996$Patho_minR = (clinicInfo_GSE200996$Patho_R>=10)+0
+clinicInfo_GSE200996 = clinicInfo_GSE200996[c("PatientID", "RECIST_R", "Patho_minR")]
+
+GSE200996_all_info <- merge(GSE200996_ICF_df, clinicInfo_GSE200996, by = "PatientID", all.x = T)
+GSE200996_all_info = GSE200996_all_info[!is.na(GSE200996_all_info$B_cells_Tissue), ]
+GSE200996_all_info$PBMC_Bgroup = ifelse(GSE200996_all_info$B_cells_PBMC > median(GSE200996_all_info$B_cells_PBMC), "PBMC-High", "PBMC-Low")
+GSE200996_all_info$Tissue_Bgroup = ifelse(GSE200996_all_info$B_cells_Tissue > median(GSE200996_all_info$B_cells_Tissue), "Tissue-High", "Tissue-Low")
+GSE200996_all_info$Group = paste(GSE200996_all_info$PBMC_Bgroup, GSE200996_all_info$Tissue_Bgroup, sep = ",")
+
+GSE200996_all_info_test = na.omit(GSE200996_all_info[c("Group", "Patho_minR")])
+
+colnames(GSE200996_all_info_test) = c("Group", "ICBR")
+
+wilcox.test(GSE200996_all_info_test$ICBR[GSE200996_all_info_test$Group == "PBMC-High,Tissue-Low"], GSE200996_all_info_test$ICBR[GSE200996_all_info_test$Group %in% c("PBMC-Low,Tissue-High")])
+
+response_rate_df <- GSE200996_all_info_test %>%
+  group_by(Group) %>%
+  summarise(response_rate = mean(ICBR == 1))  # Calculate response rate
+
+# Plot the response rate as a barplot
+pdf(file = paste0(result_fig_dir, "Box_GSE200996_PBMC_vs_Tissue_",response_type,"_PK.pdf"), 
+      height = 3.5, width = 4)
+ggplot(response_rate_df, aes(x = Group, y = response_rate)) +
+  geom_bar(stat = "identity", fill = "black") +
+  labs(x = "", y = "Response rate", title = "") +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+  scale_y_continuous(labels = scales::percent)  
+dev.off()
+
+```
+
+
+# Figure S6B. analysis in Cohort11
+```{r}
+
+tissue_type = "B_cells_tumor"  # B_cells_stroma B_cells_tumor
+
+
+data_dir = "../02.Input/HNSCC-Amanda/"
+Psyrri_all_info <- read_excel(paste0(data_dir, "HNSCC ITx annotations all assays.xlsx"), sheet = "Sheet1")
+Psyrri_all_info = Psyrri_all_info[c(1,4:8,33,37:102, 105:136)]
+Psyrri_all_info$ICBR = 0
+Psyrri_all_info$ICBR[Psyrri_all_info$BOR %in% c("CR", "PR")] = 1 # , "MR" , "SD"
+Psyrri_all_info$B2ML = Psyrri_all_info$`B Cells count`/(Psyrri_all_info$`Monocytes Count`+Psyrri_all_info$`Lymphocytes Count`)
+
+Psyrri_all_info = Psyrri_all_info[c("ICBR", "B2ML", "CD20+ stroma pre", "CD20+ tumor pre")]
+colnames(Psyrri_all_info) = c("ICBR", "B_cells_PBMC", "B_cells_stroma", "B_cells_tumor")
+Psyrri_all_info_test = Psyrri_all_info[c("ICBR", "B_cells_PBMC", tissue_type)]
+Psyrri_all_info_test = na.omit(Psyrri_all_info_test)
+
+Psyrri_all_info_test$PBMC_Bgroup = ifelse(Psyrri_all_info_test$B_cells_PBMC > median(Psyrri_all_info_test$B_cells_PBMC), "PBMC-High", "PBMC-Low")
+Psyrri_all_info_test$Tissue_Bgroup = ifelse(Psyrri_all_info_test[[tissue_type]] > median(Psyrri_all_info_test[[tissue_type]]), "Tissue-High", "Tissue-Low")
+Psyrri_all_info_test$Group = paste(Psyrri_all_info_test$PBMC_Bgroup, Psyrri_all_info_test$Tissue_Bgroup, sep = ",")
+
+Psyrri_all_info_test = Psyrri_all_info_test[c("Group", "ICBR")]
+wilcox.test(Psyrri_all_info_test$ICBR[Psyrri_all_info_test$Group == "PBMC-High,Tissue-Low"], Psyrri_all_info_test$ICBR[Psyrri_all_info_test$Group %in% c("PBMC-Low,Tissue-High")])
+
+response_rate_df <- Psyrri_all_info_test %>%
+  group_by(Group) %>%
+  summarise(response_rate = mean(ICBR == 1))  # Calculate response rate
+
+# Plot the response rate as a barplot
+pdf(file = paste0(result_fig_dir, "Box_Amanda_PBMC_vs_Tissue_",tissue_type,"_PK.pdf"), 
+      height = 3.5, width = 4)
+ggplot(response_rate_df, aes(x = Group, y = response_rate)) +
+  geom_bar(stat = "identity", fill = "black") +
+  labs(x = "", y = "Response rate", title = "") +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+  scale_y_continuous(labels = scales::percent)  
+dev.off()
+
+```
+
+

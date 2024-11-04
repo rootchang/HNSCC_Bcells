@@ -1,0 +1,135 @@
+---
+title: "Correlations between B cell abundance and Cytosig score (Cohort6)"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+# Aims:
+
+- Cor between B abundance and cytosig score in Cohort6
+
+
+
+# load required package
+```{r, include=FALSE}
+
+library(Seurat)
+library(pheatmap)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+
+```
+
+
+# cor matrix (Cohort6)
+```{r}
+
+dataset_name = 'GSE234933'
+sampleType_name = "Tissue"
+
+# local
+data_dir <- "../02.Input/GSE234933/"
+fig_dir = "../03.Results/Figures/"
+
+# read in B cell abundance
+ICF_df = read.csv(file = paste0(data_dir, "Tissue_CellProportions_L2_L3_merged.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+ICF_df <- data.frame(t(ICF_df[,"B_cells", drop = FALSE]))
+samples_order = colnames(ICF_df)
+
+GSE234933_Bratio_Cytosig_cor_df = data.frame(CytosigName = as.character(),
+                                             CellType = as.character(),
+                                             SCC = as.numeric(),
+                                             pval = as.numeric()
+                                             )
+
+cell_type_all = c("AllCells", "B", "T", "DC", "Endo", "Fibroblasts", "Macrophages", "Mast", "Monocytes", "Neutrophils", "Tumor") 
+
+for (ct_i in 1: length(cell_type_all)){
+  ct = cell_type_all[ct_i]
+  # read in cytosig result
+  cytosig_result = read.csv(paste0(data_dir, "Cytosig/cytosig_",ct,".Zscore"),sep="\t",header = T, row.names = 1)
+  cytosig_result <- cytosig_result[, intersect(samples_order, names(cytosig_result)), drop = FALSE]
+  missing_columns <- setdiff(samples_order, names(cytosig_result))
+  cytosig_result[missing_columns] <- NA
+  cytosig_result <- cytosig_result[, samples_order]
+  
+  tot_cytosig_num = nrow(cytosig_result)
+  # Initialize vectors to store the results
+  spearman_correlations <- numeric(nrow(cytosig_result))
+  p_values <- numeric(nrow(cytosig_result))
+  # Extract the row from ICF_df as a numeric vector
+  ICF_vector <- as.numeric(ICF_df[1,])
+  # Loop through each row of cytosig_result to calculate Spearman correlation
+  for (i in 1:tot_cytosig_num) {
+    test_result <- cor.test(ICF_vector, as.numeric(cytosig_result[i,]), method = "spearman") 
+    spearman_correlations[i] <- test_result$estimate
+    p_values[i] <- test_result$p.value
+  }
+  # Create a new data frame to store the Spearman correlations and p-values
+  correlation_results <- data.frame(CytosigName = rownames(cytosig_result),
+                                   CellType = rep(ct, 1, tot_cytosig_num),
+                                   SCC = spearman_correlations,
+                                   pval = p.adjust(p_values, method = "BH") 
+                                    )
+  GSE234933_Bratio_Cytosig_cor_df = rbind(GSE234933_Bratio_Cytosig_cor_df, correlation_results)
+}
+
+GSE234933_Bratio_Cytosig_cor_df <- GSE234933_Bratio_Cytosig_cor_df[order(GSE234933_Bratio_Cytosig_cor_df$pval),]
+GSE234933_Bratio_Cytosig_cor_df[1:50,]
+
+```
+
+# Figure S10F. Dotplot (Cohort6)
+```{r}
+
+Bratio_Cytosig_cor_df = GSE234933_Bratio_Cytosig_cor_df
+
+#### order Cytosigs 
+Bratio_Cytosig_cor_df$mean_SCC <- ave(Bratio_Cytosig_cor_df$SCC, Bratio_Cytosig_cor_df$CytosigName, FUN = min)
+Cytosig_names <- unique(Bratio_Cytosig_cor_df[order(Bratio_Cytosig_cor_df$mean_SCC, Bratio_Cytosig_cor_df$CytosigName), "CytosigName"])
+
+Bratio_Cytosig_cor_df$`-Log10 p.adj` = -log10(Bratio_Cytosig_cor_df$pval)
+Bratio_Cytosig_cor_df$CytosigName_number <- as.numeric(factor(Bratio_Cytosig_cor_df$CytosigName, levels = Cytosig_names))
+Bratio_Cytosig_cor_df$CellType = factor(Bratio_Cytosig_cor_df$CellType, levels = c("HNSC_HPV-", "HNSC_HPV+", "Unknown", "AllCells","B","T", "DC", "Macrophages", "Monocytes", "Neutrophils", "Mast", "Fibroblasts", "Endo", "NormalEpith", "Tumor"))
+
+
+pdf(file = paste0(fig_dir, "Dotplot_Bratio_Cytosig_Cor_mergedMatrix_GSE234933_and_TCGA.pdf"), width = 4.5, height = 8) 
+ggplot(Bratio_Cytosig_cor_df, aes(x = CellType, y = CytosigName_number, size = `-Log10 p.adj`, color = SCC)) +
+  geom_point() +
+  scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-0.65, 0.65)) +
+  theme_minimal() +
+  labs(title = "", x = "", y = "") +
+  scale_y_continuous(breaks = 1:length(Cytosig_names), labels = Cytosig_names,
+                     sec.axis = sec_axis(~., breaks = 1:length(Cytosig_names), labels = Cytosig_names)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+        axis.title.y = element_text(face = "bold", margin = margin(0,20,0,0), size = rel(1.1), color = 'black'),
+        axis.title.x = element_text(hjust = 0.5, face = "bold", margin = margin(20,0,0,0), size = rel(1.1), color = 'black'),
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(),
+        axis.text.y.right = element_text(color = "black"),
+        panel.grid.minor = element_blank()
+        ) 
+dev.off()
+
+```
+
+

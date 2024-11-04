@@ -1,0 +1,159 @@
+---
+title: "Correlation network between abundance of cells (Cohort6)"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- correlation network between abundance of different cells in tumor (Cohort6)
+
+
+
+# load required package
+```{r}
+
+library(survival)
+library(survminer)
+library(ggplot2)
+library(RColorBrewer)
+library(glmnet)
+library(rlang)
+library(pROC)
+library(verification)
+library(tibble)
+library(gridExtra)
+library(forestplot)
+
+```
+
+
+
+# Set directories & parameters
+```{r}
+
+result_dir <- "../03.Results/Data/"
+result_fig_dir <- "../03.Results/Figures/"
+
+```
+
+# load data (sc RNASeq)
+```{r}
+
+# GSE234933
+GSE234933_tumor_geneExpr_df = read.csv('../02.Input/GSE234933/GSE234933_pseudobulk_TPM_AllCells.csv', header=TRUE, row.names = 1) 
+GSE234933_tumor_IGHM_df = data.frame(t(GSE234933_tumor_geneExpr_df[c("IGHM","IGHD","IGHA1","IGHG1","IGHG3"),]))
+GSE234933_tumor_IGHM_df$SampleID = rownames(GSE234933_tumor_IGHM_df)
+GSE234933_tumor_IGHM_df$SampleID = gsub("\\.","-",GSE234933_tumor_IGHM_df$SampleID)
+
+GSE234933_tumor_ICF_df = read.csv('../02.Input/GSE234933/GSE234933_Tissue_CellProportions_withTumorCells.csv', header=TRUE, row.names = 1) 
+GSE234933_tumor_ICF_df = GSE234933_tumor_ICF_df[c(1:7,9:12)]
+GSE234933_tumor_ICF_df$Tumor_epi = GSE234933_tumor_ICF_df$Tumor + GSE234933_tumor_ICF_df$NormalEpith
+GSE234933_tumor_ICF_L3_df = read.csv('../02.Input/GSE234933/Tissue_CellProportions_L2_L3_merged.csv', header=TRUE, row.names = 1) 
+GSE234933_tumor_ICF_L3_df$NonPlasmaB = GSE234933_tumor_ICF_L3_df$ABC + GSE234933_tumor_ICF_L3_df$MemoryB + GSE234933_tumor_ICF_L3_df$NaiveB + GSE234933_tumor_ICF_L3_df$GCB
+GSE234933_tumor_ICF_L3_df$T_cells = GSE234933_tumor_ICF_L3_df$T_NK_cells - GSE234933_tumor_ICF_L3_df$NK
+GSE234933_tumor_ICF_L3_df = GSE234933_tumor_ICF_L3_df[c(1:9,24,25)]
+
+GSE234933_tumor_ICF_df = cbind(GSE234933_tumor_ICF_df, GSE234933_tumor_ICF_L3_df)
+GSE234933_tumor_ICF_df$SampleID = rownames(GSE234933_tumor_ICF_df)
+
+GSE234933_tumor_ICF_df = merge(GSE234933_tumor_ICF_df, GSE234933_tumor_IGHM_df, by ="SampleID", all.x=T)
+
+GSE234933_tumor_ICF_df0 = GSE234933_tumor_ICF_df
+
+
+```
+
+# Figure S10A. correlation network between abundance of different cells in tumor (GSE234933)
+```{r}
+
+library(igraph) 
+
+GSE234933_tumor_ICF_df$SampleID = NULL
+
+GSE234933_tumor_ICF_df = GSE234933_tumor_ICF_df0[c("Tumor_epi","Endothelial_cells","Fibroblasts","T_NK_cells","B_cells","Dendritic_cells","Macrophages","Mast_cells","Neutrophils","Monocytes")] 
+colnames(GSE234933_tumor_ICF_df) = c("Tumor","Endothelial_cells","Fibroblasts","T_NK_cells","B_cells","Dendritic_cells","Macrophages","Mast_cells","Neutrophils","Monocytes")
+
+sample_NUM = ncol(GSE234933_tumor_ICF_df)
+cor_matrix_GSE234933 = matrix(0, nrow = sample_NUM, ncol = sample_NUM)
+rownames(cor_matrix_GSE234933) = colnames(GSE234933_tumor_ICF_df)
+colnames(cor_matrix_GSE234933) = colnames(GSE234933_tumor_ICF_df)
+
+for (i in 1:sample_NUM){
+  for (j in i:sample_NUM){
+    df_temp = data.frame(a1=GSE234933_tumor_ICF_df[,i], a2 = GSE234933_tumor_ICF_df[,j])
+    # Omit NA values after outlier removal
+    df_temp <- na.omit(df_temp)
+    # Calculate Spearman's rank correlation
+    scc <- cor(df_temp$a1, df_temp$a2, method = "spearman")
+    cor_matrix_GSE234933[i,j] = scc
+    cor_matrix_GSE234933[j,i] = scc
+  }
+  cor_matrix_GSE234933[i,i] = 0
+}
+
+cor_matrix_GSE234933["Tumor", "B_cells"] 
+cor_matrix_GSE234933["Tumor", "T_NK_cells"]
+cor_matrix_GSE234933["B_cells", "T_NK_cells"]
+cor_matrix_GSE234933["B_cells", "Dendritic_cells"]
+cor_matrix_GSE234933["T_NK_cells", "Dendritic_cells"]
+cor_matrix_GSE234933["Macrophages", "Dendritic_cells"]
+cor_matrix_GSE234933["Macrophages", "Mast_cells"]
+cor_matrix_GSE234933["Neutrophils", "Mast_cells"]
+cor_matrix_GSE234933["Neutrophils", "Monocytes"]
+cor_matrix_GSE234933["Endothelial_cells", "Fibroblasts"]
+
+graph <- graph_from_adjacency_matrix(cor_matrix_GSE234933, weighted=TRUE)
+
+filtered_edges <- which(abs(E(graph)$weight) < 0.4)
+graph <- delete_edges(graph, filtered_edges)
+
+# Map the colors to the vertices based on their labels
+color_vector <- c("Tumor" = "#999999", 
+                  "Endothelial_cells" = "#ff7f0e", "Fibroblasts" = "#ff7f0e", "NormalEpith" = "#ff7f0e",
+                  "Dendritic_cells" = "#1f77b4", "Macrophages" = "#1f77b4", "Mast_cells" = "#1f77b4","Monocytes" = "#1f77b4", "Neutrophils" = "#1f77b4", 
+                  "B_cells" = "#2ca02c","T_NK_cells" = "#2ca02c","CD8T" = "#2ca02c","MemoryB" = "#2ca02c","NaiveB" = "#2ca02c","NK" = "#2ca02c","PlasmaB" = "#2ca02c","Thelp" = "#2ca02c","Tregs" = "#2ca02c","NonPlasma" = "#2ca02c") 
+vertex_colors <- sapply(V(graph)$name, function(x) color_vector[x])
+
+# Plot 
+pdf_file <- paste0(result_fig_dir,paste0("CorrNetwork_cellAbundance_GSE234933.pdf"))
+fig_width = 7
+fig_height = 7
+fontSize = 1.2
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot(graph, 
+     layout=layout.circle,
+     edge.width= abs(E(graph)$weight)^2*10,
+     edge.color=ifelse(E(graph)$weight > 0, "red", "blue"),
+     vertex.size=20,
+     vertex.color = vertex_colors,
+     vertex.label.color = "black", 
+     vertex.label.font = 1,
+     label.family = "Arial",
+     edge.arrow.size=0, # Set arrow size to 0
+     vertex.label="") # ""   V(graph)$name
+
+dev.off()
+
+
+```
+
+
+

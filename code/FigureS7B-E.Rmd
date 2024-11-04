@@ -1,0 +1,470 @@
+---
+title: "Comparison of the predictive power of overall B cell abundance and other individual or integrated variables"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Study the additional questions (3): Could two established blood-derived biomarkers, NLR and albumin, outperform B cell abundance in predicting ICB response?
+- Study the additional questions (4): Could combining B cell abundance with other biomarkers enhance predictive power?
+
+# load required package
+```{r, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+library(pROC)
+library(verification)
+library(GSVA)
+
+library(purrr)
+library(readr)
+
+library(readxl)
+library(openxlsx)
+library(caret) 
+
+```
+
+# set color
+```{r}
+
+custom_colors = c("#1c4f27", "#81144e", "#79831e", "#00305d", "#C0C0C0", "#9c1915", "black", "#404040", "#808080", "#D3D3D3")
+
+```
+
+# set input and output directories & parameters
+```{r}
+
+result_fig_dir = "../03.Results/Figures/"
+
+
+```
+
+# common functions and constants
+```{r}
+
+log_odds <- function(features, coef, intercept) {
+  sum(features * coef) + intercept
+}
+
+prob_positive_class <- function(features, coef, intercept) {
+  odds <- exp(log_odds(features, coef, intercept))
+  p <- odds / (1 + odds)
+  return(p)
+}
+
+```
+
+# Figure S7B. compare NLR, albumin and B cell ratio AUC on Cohort11
+```{r}
+
+data_dir = "../02.Input/HNSCC-Amanda/"
+Amanda_flow_all_info <- read_excel(paste0(data_dir, "HNSCC ITx annotations all assays_v3_flow_arranged_20241004.xlsx"), sheet = "Sheet1")
+
+colnames(Amanda_flow_all_info)
+
+Amanda_flow_all_info = Amanda_flow_all_info[c(16, 17, 21, 598, 603, 606)]
+Amanda_flow_all_info$B_cells_ratio = Amanda_flow_all_info$`Flow B Cells count`/(Amanda_flow_all_info$`Flow Monocytes Count` + Amanda_flow_all_info$`Flow Lymphocytes Count`)
+Amanda_flow_all_info$B2L = Amanda_flow_all_info$`Flow B Cells count`/(0 + Amanda_flow_all_info$`Flow Lymphocytes Count`)
+Amanda_flow_all_info$L2LM = Amanda_flow_all_info$`Flow Lymphocytes Count`/(Amanda_flow_all_info$`Flow Monocytes Count` + Amanda_flow_all_info$`Flow Lymphocytes Count`)
+
+Amanda_flow_all_info$ICBR = 0
+Amanda_flow_all_info$ICBR[Amanda_flow_all_info$BOR %in% c("CR", "PR")] = 1 
+
+Amanda_flow_all_info = Amanda_flow_all_info[!is.na(Amanda_flow_all_info$B_cells_ratio),]
+
+cor.test(Amanda_flow_all_info$B_cells_ratio, Amanda_flow_all_info$B2L)
+cor.test(Amanda_flow_all_info$B_cells_ratio, Amanda_flow_all_info$L2LM)
+
+### compare AUC with p values between B vs albumin or NLR
+roc_B_cells_ratio <- roc(Amanda_flow_all_info$ICBR, Amanda_flow_all_info$B_cells_ratio)
+roc_B2L <- roc(Amanda_flow_all_info$ICBR, Amanda_flow_all_info$B2L)
+roc_L2LM <- roc(Amanda_flow_all_info$ICBR, Amanda_flow_all_info$L2LM)
+roc_blood_alb <- roc(Amanda_flow_all_info$ICBR, Amanda_flow_all_info$`blood alb g/dl`)
+roc_n_l_ratio <- roc(Amanda_flow_all_info$ICBR, Amanda_flow_all_info$`n/l ratio`)
+# Compare AUCs between B_cells_ratio and blood alb g/dl
+test1 <- roc.test(roc_B_cells_ratio, roc_blood_alb)
+# Compare AUCs between B_cells_ratio and n/l ratio
+test2 <- roc.test(roc_B_cells_ratio, roc_n_l_ratio)
+
+
+#### AUC 
+all_info = Amanda_flow_all_info
+Var_all = c("B_cells_ratio", "blood alb g/dl", "n/l ratio")
+result_df = data.frame(Var = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(Var_all)){
+  cn = Var_all[cn_i]
+  cancerData = all_info[c(cn, "ICBR")]
+  colnames(cancerData) = c("Var", "ICBR")
+  logistic_model = glm(ICBR ~ Var, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['Var'], type = "response")
+  roc_result=roc(cancerData$ICBR,cancerData$Var, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICBR,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+result_df$Var = factor(c("B cells", "Albumin", "NLR"),levels = c("B cells", "Albumin", "NLR"))
+result_df$AUC[3] = 1 - result_df$AUC[3]
+
+#### AUC barplots
+fig_width = 3.5
+fig_height = 4
+fontSize = 1.2
+pdf_file <- paste0(result_fig_dir,paste0("B_vs_NLR_AUC.pdf"))
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(result_df, aes(x = Var, y = AUC)) +
+  geom_bar(stat = "identity", fill = "black", color = "black") + 
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        ) +
+  scale_color_manual(values = custom_colors) +
+  ylim(0, 1)+
+  labs(title = "", x = "", y = "AUC")
+dev.off()
+
+```
+
+# Figure S7C. compare NLR and albumin AUC on Cohort9
+```{r}
+
+MSK_data_raw = read.xlsx("../02.Input/MSKCC_HNC/MSK_full.xlsx", sheet = "Sheet1", rowNames = T)
+
+feature_all = colnames(MSK_data_raw)[c(6:9,11:14,17)+1]
+all_info = MSK_data_raw[c("Year.of.ICI.treatment.start", feature_all, "Response.(1:Responder;.0:Non-responder)")]
+colnames(all_info) = c("Year", feature_all_plotString, "ICB_R")
+feature_all = c("NLR", "Albumin")
+
+all_info <- data.frame(lapply(all_info, as.numeric))
+
+result_df = data.frame(Var = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(feature_all)){
+  cn = feature_all[cn_i]
+  cancerData = all_info[c(cn, "ICB_R")]
+  colnames(cancerData) = c("Feature", "ICB_R")
+  logistic_model = glm(ICB_R ~ Feature, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['Feature'], type = "response")
+  roc_result=roc(cancerData$ICB_R,cancerData$Feature, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICB_R,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = feature_all[cn_i]
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+result_df$AUC[1] = 1 - result_df$AUC[1]
+
+#### AUC barplots
+fig_width = 2.5
+fig_height = 4
+fontSize = 1.2
+pdf_file <- paste0(result_fig_dir,paste0("NLR_vs_albumin_AUC_IMPACT.pdf"))
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(result_df, aes(x = Var, y = AUC)) +
+  geom_bar(stat = "identity", fill = "black", color = "black") + 
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        ) +
+  scale_color_manual(values = custom_colors) +
+  ylim(0, 1)+
+  labs(title = "", x = "", y = "AUC")
+dev.off()
+
+```
+
+# Figure S7D. AUCs of individual variables and integrative models (Cohort5)
+```{r}
+
+####################################  scRNAseq #################################### 
+clinical_info0 = read.csv(file = paste0("../02.Input/GSE232240/clinical_info.csv"), header = T)
+clinical_info0$ICBR[clinical_info0$response=="NR"] = 0
+clinical_info0$ICBR[clinical_info0$response=="RE"] = 1
+clinical_info0 = clinical_info0[c(5:7)]
+norm_cell_counts_df = read.csv(paste0("../02.Input/GSE232240/Tissue_CellProportions.csv"), header = T)
+norm_cell_counts_df$ID <- substr(norm_cell_counts_df$X, 4, 5)
+norm_cell_counts_df$ID <- as.numeric(norm_cell_counts_df$ID)
+norm_cell_counts_df = norm_cell_counts_df[c(1,2,8)]
+norm_cell_counts_df$B = norm_cell_counts_df$B*100
+GSE232240_all_info = merge(norm_cell_counts_df, clinical_info0, by.x="X", by.y = "meta", all.x = T)
+
+clinical_info <- read_excel(paste0("../02.Input/GSE232240/Bulk_deconvolution_ICBresponse.xlsx"), sheet = "all_info")
+clinical_info = clinical_info[c(1,3,9)]
+GSE232240_all_info = merge(GSE232240_all_info, clinical_info, by="ID", all.x = T)
+
+# gene expr signatures
+GSE232240_geneExp_pseudobulk = read.csv('../02.Input/GSE232240/GSE232240_Tissue_pseudobulk_TPM_AllCells.txt', header=TRUE, row.names = 1)
+GSE232240_geneExprSig_df = data.frame(t(GSE232240_geneExp_pseudobulk[c("PTGS1","PTGS2", "CD8A"),]))
+cyt_genes = c("PRF1", "GZMA")
+GSE232240_geneExprSig_df$CYT =  as.numeric(colSums(log(GSE232240_geneExp_pseudobulk[cyt_genes,]+1)))/length(cyt_genes)
+
+GSE232240_geneExprSig_df$X = gsub("\\.","_",rownames(GSE232240_geneExprSig_df))
+
+GSE232240_all_info = merge(GSE232240_all_info, GSE232240_geneExprSig_df, by="X")
+GSE232240_all_info = GSE232240_all_info[grepl("_pre", GSE232240_all_info$X), ]
+
+#### AUC 
+all_info = GSE232240_all_info
+Var_all = c("B", "Pre-treatment PD-L1 CPS", "Pre-treatment TMB", "CYT")
+result_df = data.frame(Var = character(),
+                       AUC = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(Var_all)){
+  cn = Var_all[cn_i]
+  cancerData = all_info[c(cn, "ICBR")]
+  colnames(cancerData) = c("Var", "ICBR")
+  logistic_model = glm(ICBR ~ Var, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['Var'], type = "response")
+  auc_p=roc.area(cancerData$ICBR,predict_RecR)
+  auc_RecR = auc_p$A
+  if (auc_RecR < 0.5){
+    auc_RecR = 1 - auc_RecR
+  }
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:3] = c(auc_RecR, p_RecR)
+}
+
+
+###################### LLR model construction and evaluation ######################
+test_vars = list(add_PDL1 = c("Pre-treatment PD-L1 CPS"),
+                 add_TMB = c("Pre-treatment TMB"),
+                 add_CYT = c("CYT"),
+                 combined = c("Pre-treatment PD-L1 CPS","Pre-treatment TMB","CYT")
+                 )
+for (var_i in 1:length(test_vars)){
+  model_data_df = as.data.frame(GSE232240_all_info[c("B",test_vars[[var_i]], "ICBR")])
+  model_data_df = na.omit(model_data_df)
+  # Prepare the data
+  x_train <- as.matrix(model_data_df[, 1:(ncol(model_data_df) - 1)]) 
+  y_train <- model_data_df$ICBR  
+  
+  # (1) Use 5-fold cross-validation to determine the optimal lambda
+  set.seed(1)  # for reproducibility
+  cv_fit <- cv.glmnet(x_train, y_train, family = "binomial", type.measure = "auc", nfolds = 5)
+  optimal_lambda <- cv_fit$lambda.min
+  
+  # (2) Perform 20-time repeated 5-fold cross-validation to calculate mean coefficients and intercept
+  coefs <- matrix(NA, nrow = 20 * 5, ncol = ncol(x_train) + 1)
+  set.seed(1)
+  for (i in 1:20) {  # 20 times repeated 5-fold CV
+    for (fold in 1:5) {
+      indices <- createFolds(y_train, k = 5, list = TRUE, returnTrain = TRUE)
+      cv_model <- glmnet(x_train[indices[[fold]],], y_train[indices[[fold]]], family = "binomial", lambda = optimal_lambda)
+      coefs[(i - 1) * 5 + fold, ] <- as.numeric(coef(cv_model, s = optimal_lambda))
+    }
+  }
+  
+  mean_coefs <- colMeans(coefs)
+  mean_coef <- mean_coefs[-1]  # excluding intercept
+  mean_intercept <- mean_coefs[1]
+  
+  # (3) Predict on all_info_train and all_info_test using the manually constructed model and calculate the AUC
+  train_predictions <- apply(x_train, 1, prob_positive_class, coef = mean_coef, intercept = mean_intercept)
+  auc_value <- roc(response = model_data_df$ICBR, predictor = train_predictions)$auc
+  print(auc_value)
+  auc_p=roc.area(model_data_df$ICBR,train_predictions)
+  auc_RecR = auc_p$A
+  if (auc_RecR < 0.5){
+    auc_RecR = 1 - auc_RecR
+  }
+  p_RecR = auc_p$p.value
+
+  result_df[var_i+length(Var_all),1] = c(names(test_vars)[var_i])
+  result_df[var_i+length(Var_all),2:3] = c(auc_RecR, p_RecR)
+}
+###################### LLR model construction and evaluation ######################
+
+result_df$Var = c("B cells", "PD-L1 CPS", "TMB", "CYT", "B cells + PD-L1", " B cells + TMB", "B cells + CYT", "All combined")
+result_df$Var = factor(result_df$Var,levels = result_df$Var)
+
+
+#### AUC barplots
+fig_width = 3.5
+fig_height = 4
+fontSize = 1.2
+pdf_file <- paste0(result_fig_dir,paste0("Cohort5_integrativeModeling_AUC.pdf"))
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(result_df, aes(x = Var, y = AUC)) +
+  geom_bar(stat = "identity", fill = "black", color = "black") + 
+  geom_text(aes(label = round(AUC, 2)), vjust = -0.5, color = "black", size = 3.5) +  
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.text.y = element_text(color = "black"),
+        axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+        panel.border = element_blank() 
+        ) +
+  scale_color_manual(values = custom_colors) +
+  ylim(0, 1) +
+  labs(title = "", x = "", y = "AUC")
+dev.off()
+
+```
+
+# Figure S7E. AUCs of individual variables and integrative models (Cohort11)
+```{r}
+
+data_dir = "../02.Input/HNSCC-Amanda/"
+Amanda_flow_all_info <- read_excel(paste0(data_dir, "HNSCC ITx annotations all assays_v3_flow_arranged_20241004.xlsx"), sheet = "Sheet1")
+
+colnames(Amanda_flow_all_info)
+
+Amanda_flow_all_info = Amanda_flow_all_info[c(16, 17, 20:21, 598, 603, 606, 637, 642)] 
+Amanda_flow_all_info$B_cells_ratio = Amanda_flow_all_info$`Flow B Cells count`/(Amanda_flow_all_info$`Flow Monocytes Count` + Amanda_flow_all_info$`Flow Lymphocytes Count`)
+Amanda_flow_all_info$CD8T_cells_ratio = Amanda_flow_all_info$`Flow T CD8+ Count`/(Amanda_flow_all_info$`Flow Monocytes Count` + Amanda_flow_all_info$`Flow Lymphocytes Count`)
+
+Amanda_flow_all_info$ICBR = 0
+Amanda_flow_all_info$ICBR[Amanda_flow_all_info$BOR %in% c("CR", "PR")] = 1 
+
+#### AUC 
+all_info = Amanda_flow_all_info
+Var_all = c("B_cells_ratio", "blood alb g/dl", "n/l ratio", "CD8T_cells_ratio","PD-L1 PRE", "TLS PRE")
+result_df = data.frame(Var = character(),
+                       AUC = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(Var_all)){
+  cn = Var_all[cn_i]
+  cancerData = all_info[c(cn, "ICBR")]
+  cancerData = na.omit(cancerData)
+  colnames(cancerData) = c("Var", "ICBR")
+  logistic_model = glm(ICBR ~ Var, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['Var'], type = "response")
+  auc_p=roc.area(cancerData$ICBR,predict_RecR)
+  auc_RecR = auc_p$A
+  if (auc_RecR < 0.5){
+    auc_RecR = 1 - auc_RecR
+  }
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:3] = c(auc_RecR, p_RecR)
+}
+
+###################### LLR model construction and evaluation ######################
+test_vars = list(add_Albumin = c("blood alb g/dl"),
+                 add_NLR = c("n/l ratio"),
+                 add_CD8T_cells = c("CD8T_cells_ratio"),
+                 add_PDL1 = c("PD-L1 PRE"),
+                 add_TLS = c("TLS PRE"),
+                 combined = c("blood alb g/dl","n/l ratio","CD8T_cells_ratio","PD-L1 PRE","TLS PRE")
+                 )
+for (var_i in 1:length(test_vars)){
+  model_data_df = as.data.frame(Amanda_flow_all_info[c("B_cells_ratio",test_vars[[var_i]], "ICBR")])
+  model_data_df = na.omit(model_data_df)
+  # Prepare the data
+  x_train <- as.matrix(model_data_df[, 1:(ncol(model_data_df)-1)])  # first 4 columns as features
+  y_train <- model_data_df$ICBR  # 5th column as response
+  
+  # (1) Use 5-fold cross-validation to determine the optimal lambda
+  set.seed(2)  # for reproducibility
+  cv_fit <- cv.glmnet(x_train, y_train, family = "binomial", type.measure = "auc", nfolds = 5)
+  optimal_lambda <- cv_fit$lambda.min
+  
+  # (2) Perform 20-time repeated 5-fold cross-validation to calculate mean coefficients and intercept
+  coefs <- matrix(NA, nrow = 20 * 5, ncol = ncol(x_train) + 1)
+  set.seed(2)
+  for (i in 1:20) {  # 20 times repeated 5-fold CV
+    for (fold in 1:5) {
+      indices <- createFolds(y_train, k = 5, list = TRUE, returnTrain = TRUE)
+      cv_model <- glmnet(x_train[indices[[fold]],], y_train[indices[[fold]]], family = "binomial", lambda = optimal_lambda)
+      coefs[(i - 1) * 5 + fold, ] <- as.numeric(coef(cv_model, s = optimal_lambda))
+    }
+  }
+  
+  mean_coefs <- colMeans(coefs)
+  mean_coef <- mean_coefs[-1]  # excluding intercept
+  mean_intercept <- mean_coefs[1]
+  
+  # (3) Predict on all_info_train and all_info_test using the manually constructed model and calculate the AUC
+  train_predictions <- apply(x_train, 1, prob_positive_class, coef = mean_coef, intercept = mean_intercept)
+  auc_value <- roc(response = model_data_df$ICBR, predictor = train_predictions)$auc
+  print(auc_value)
+  auc_p=roc.area(model_data_df$ICBR,train_predictions)
+  auc_RecR = auc_p$A
+  if (auc_RecR < 0.5){
+    auc_RecR = 1 - auc_RecR
+  }
+  p_RecR = auc_p$p.value
+  result_df[var_i+length(Var_all),1] = c(names(test_vars)[var_i])
+  result_df[var_i+length(Var_all),2:3] = c(auc_RecR, p_RecR)
+}
+
+###################### LLR model construction and evaluation ######################
+result_df$Var = c("B cells", "Albumin", "NLR", "CD8T cells", "PD-L1 positivity", "TLS presence", "B cells + Albumin", "B cells + NLR", "B cells + CD8T cells", "B cells + PD-L1", "B cells + TLS", "All combined")
+result_df$Var = factor(result_df$Var,levels = result_df$Var)
+
+
+#### AUC barplots
+fig_width = 4.5
+fig_height = 4
+fontSize = 1.2
+pdf_file <- paste0(result_fig_dir,paste0("Cohort11_integrativeModeling_AUC.pdf"))
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(result_df, aes(x = Var, y = AUC)) +
+  geom_bar(stat = "identity", fill = "black", color = "black") + 
+  geom_text(aes(label = round(AUC, 2)), vjust = -0.5, color = "black", size = 3.5) +  
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.text.y = element_text(color = "black"),
+        axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+        panel.border = element_blank() 
+        ) +
+  scale_color_manual(values = custom_colors) +
+  ylim(0, 1) +
+  labs(title = "", x = "", y = "AUC")
+dev.off()
+
+```
+
+

@@ -1,0 +1,576 @@
+---
+title: "Commonly enriched pathways in cells from B-high vs B-low samples (Cohort6)"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Characterization of differentially expressed pathways of different cell types in B-rich vs B-poor tumors (Cohort6)
+
+
+# load required package
+```{r, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+library(openxlsx)
+library(UCell)
+library(readxl)
+
+library(AnnotationDbi)
+library(org.Hs.eg.db) 
+library(ReactomePA)
+library(enrichplot)
+library(gridExtra)
+
+library(DESeq2)
+library(edgeR)
+library(clusterProfiler)
+
+library(tidyr)
+library(ggrepel)
+
+library(scales)
+
+```
+
+# parameters and constants
+```{r}
+logFC_filter = 0.1 
+return_thresh = 0.05 
+minPct_filter = 0.01 
+p_adj_cutoff = 1
+Bhigh_percentile = 0.5
+Blow_percentile = 0.5
+```
+
+
+# load .rds (GSE234933)
+```{r}
+
+dataset_name = 'GSE234933'
+# server
+data_dir = paste0("../02.Input/", dataset_name, '/')
+processed_dir = data_dir
+result_dir = "../03.Results/Data/"
+result_fig_dir = "../03.Results/Figures/"
+
+seurat_suffix = 'Tissue'
+merged_seu_GSE234933 = readRDS(file = paste0(processed_dir,"seu_",seurat_suffix,".rds"))
+
+```
+
+# identify Bhigh vs Blow tumors
+```{r}
+######## identify B-rich and B-poor tumors
+ICF_df = read.csv(file = paste0(processed_dir,"Tissue_CellProportions_L2.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+B_rich_samples = ICF_df$sample[ICF_df$B_cells > quantile(ICF_df$B_cells, Bhigh_percentile)]
+B_poor_samples = ICF_df$sample[ICF_df$B_cells < quantile(ICF_df$B_cells, Blow_percentile)]
+
+subset_seu_GSE234933 = subset(merged_seu_GSE234933, subset = meta %in% c(B_rich_samples,B_poor_samples))
+subset_seu_GSE234933$Brich = 1
+subset_seu_GSE234933$Brich[subset_seu_GSE234933$sample %in% B_poor_samples] = 0
+
+```
+
+# Find DEGs of Tumor/CD8T/Thelp/Treg/DC/B in B-rich vs B-poor samples
+```{r}
+
+# merge tumor and normal epi, remove NA cells
+subset_seu_GSE234933$cellType_origin_L1_2 = subset_seu_GSE234933$cellType_origin_L2
+subset_seu_GSE234933$cellType_origin_L1_2[subset_seu_GSE234933$cellType_origin_L1_2 == "NormalEpith"] = "Tumor"
+subset_seu_GSE234933 = subset(subset_seu_GSE234933, subset = cellType_origin_L1_2 != "NA")
+
+# find marker genes in Brich and Bpoor tumors
+Idents(object = subset_seu_GSE234933) = subset_seu_GSE234933$Brich
+cell_types_all = unique(subset_seu_GSE234933$cellType_origin_L1_2)
+DEGs_Blow_GSE234933 = list()
+DEGs_Bhigh_GSE234933 = list()
+Cells.markers_Bhigh_vs_Blow_GSE234933 = list()
+for (ct in cell_types_all){
+  print(paste(ct, "in processing ..."))
+  subset_seu = subset(subset_seu_GSE234933, subset = cellType_origin_L2 == ct)
+  Idents(object = subset_seu) = subset_seu@meta.data$Brich
+  Cells.markers_GSE234933 = FindAllMarkers(subset_seu, only.pos=TRUE, min.pct=minPct_filter, logfc.threshold = logFC_filter, return.thresh = return_thresh)
+  if (isEmpty(Cells.markers_GSE234933)){
+    DEGs_Blow_GSE234933[[ct]] = c("")
+    DEGs_Bhigh_GSE234933[[ct]] = c("")
+  }else{
+    DEGs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==0 & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+    DEGs_Bhigh_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==1 & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+  }
+  Cells.markers_Bhigh_vs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933
+}
+
+
+cell_types_L3 = c("Thelp","Tregs", "CD8T", "NK")
+for (ct in cell_types_L3){
+  print(paste(ct, "in processing ..."))
+  subset_seu = subset(subset_seu_GSE234933, subset = cellType_origin_L3 == ct)
+  Idents(object = subset_seu) = subset_seu@meta.data$Brich
+  Cells.markers_GSE234933 = FindAllMarkers(subset_seu, only.pos=TRUE, min.pct=minPct_filter, logfc.threshold = logFC_filter, return.thresh = return_thresh)
+  if (isEmpty(Cells.markers_GSE234933)){
+    DEGs_Blow_GSE234933[[ct]] = c("")
+    DEGs_Bhigh_GSE234933[[ct]] = c("")
+  }else{
+    DEGs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==0 & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+    DEGs_Bhigh_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==1 & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+  }
+  Cells.markers_Bhigh_vs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933
+}
+
+ordered_cells = c("Tumor cells", "Endothelial cells", "Fibroblasts", "Monocytes", "Macrophages", "Dendritic cells","Neutrophils", "Mast cells", "B cells", "T cells", "CD8+T cells", "Helper T cells", "Regulatory T cells", "NK cells")
+cell_types = c("Tumor cells","T cells","Dendritic cells","Fibroblasts","Neutrophils","Monocytes","B cells","Macrophages","Endothelial cells","Mast cells","Helper T cells","Regulatory T cells","CD8+T cells","NK cells")
+
+ordered_cells = c("Tumor cells", "Endothelial cells", "Fibroblasts", "Monocytes", "Macrophages", "Dendritic cells","Neutrophils", "Mast cells", "B cells", "T cells")
+cell_types = c("Tumor cells","T cells","Dendritic cells","Fibroblasts","Neutrophils","Monocytes","B cells","Macrophages","Endothelial cells","Mast cells")
+
+names(Cells.markers_Bhigh_vs_Blow_GSE234933) = cell_types
+names(DEGs_Blow_GSE234933) = cell_types
+names(DEGs_Bhigh_GSE234933) = cell_types
+
+save(Cells.markers_Bhigh_vs_Blow_GSE234933, file = paste0(processed_dir,"Cells.markers_Bhigh_vs_Blow_GSE234933_4.RData"))
+save(DEGs_Blow_GSE234933, file = paste0(processed_dir,"DEGs_Blow_GSE234933_4.RData"))
+save(DEGs_Bhigh_GSE234933, file = paste0(processed_dir,"DEGs_Bhigh_GSE234933_4.RData"))
+
+
+```
+
+
+
+# Figure S10D. extract all MSigDB pathways 
+```{r}
+
+library(msigdbr)
+library(fgsea)
+
+dataset_name = 'GSE234933'
+processed_dir = paste0("../02.Input/", dataset_name, '/')
+data_dir = paste0("../02.Input/", dataset_name, '/')
+fig_dir = paste0("../03.Results/Figures/")
+
+p_adj_cutoff = 0.01
+FC_cutoff = 0.2
+
+msigdb = msigdbr(species = "Homo sapiens", category = "H")
+msigdbr_t2g = msigdb %>% dplyr::distinct(gs_name, entrez_gene) %>% as.data.frame()
+
+all_pathways = unique(msigdbr_t2g$gs_name)
+all_pathways_short = c("Adipogenesis", "Allograft rejection", "Androgen response", "Angiogenesis", "Apical junction", "Apical surface", "Apoptosis", "Bile acid metabolism", "Cholesterol homeostasis", "Coagulation", "Complement", "DNA repair", "E2F targets", "Epithelial mesenchymal transition", "Estrogen response (early)", "Estrogen response (late)", "Fatty acid metabolism", "G2M checkpoint", "Glycolysis", "Hedgehog signaling", "Heme metabolism", "Hypoxia", "IL2/STAT5 signaling", "IL6/JAK/STAT3 signaling", "Inflammatory response", "IFN-alpha response", "IFN-gamma response", "KRAS signaling (down)", "KRAS signaling (up)", "Mitotic spindle", "MTORC1 signaling", "MYC targets (v1)", "MYC targets (v2)", "Myogenesis", "NOTCH signaling", "Oxidative phosphorylation", "P53 pathway", "Pancreas beta cells", "Peroxisome", "PI3K/AKT/MTOR signaling", "Protein secretion", "Reactive oxygen species pathway", "Spermatogenesis", "TGF-beta signaling", "TNFA signaling via NFKB", "Unfolded protein response", "UV response (down)", "UV response (up)", "WNT-beta/Catenin signaling", "Xenobiotic metabolism")
+pathways_mapping = setNames(all_pathways_short, all_pathways)
+
+ordered_cells = c("Tumor cells", "Endothelial cells", "Fibroblasts", "Monocytes", "Macrophages", "Dendritic cells","Neutrophils", "Mast cells", "B cells", "T cells")
+
+cell_type_all = ordered_cells[1:10]
+
+# load DEGs in different cell types
+####### Bhigh vs Blow
+load(file = paste0(processed_dir,"Cells.markers_Bhigh_vs_Blow_GSE234933_3.RData")) 
+
+DEGs_Blow_GSE234933 = list()
+DEGs_Bhigh_GSE234933 = list()
+for (ct in cell_type_all){
+  print(paste(ct, "in processing ..."))
+  Cells.markers_GSE234933 = Cells.markers_Bhigh_vs_Blow_GSE234933[[ct]]
+  if (isEmpty(Cells.markers_GSE234933)){
+    DEGs_Blow_GSE234933[[ct]] = c("")
+    DEGs_Bhigh_GSE234933[[ct]] = c("")
+  }else{
+    DEGs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==0 & Cells.markers_GSE234933$avg_log2FC> FC_cutoff & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+    DEGs_Bhigh_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==1 & Cells.markers_GSE234933$avg_log2FC> FC_cutoff & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+  }
+}
+
+Cells.markers_Brich_list = DEGs_Bhigh_GSE234933[cell_type_all]
+Cells.markers_Bpoor_list = DEGs_Blow_GSE234933[cell_type_all]
+GSE234933_Brich_pathway_list = list()
+GSE234933_Brich_pathway_name_list = list()
+GSE234933_Bpoor_pathway_list = list()
+GSE234933_Bpoor_pathway_name_list = list()
+for (ct in cell_type_all){ 
+  print(paste(ct, "in processing..."))
+  Brich_genes = Cells.markers_Brich_list[[ct]]
+  Bpoor_genes = Cells.markers_Bpoor_list[[ct]]
+  Brich_genes_ids = mapIds(org.Hs.eg.db, keys = Brich_genes, column = "ENTREZID", keytype = "SYMBOL")
+  Bpoor_genes_ids = mapIds(org.Hs.eg.db, keys = Bpoor_genes, column = "ENTREZID", keytype = "SYMBOL")
+  ### MSigDB pathway
+  GSE234933_Brich_pathways = enricher(gene = Brich_genes_ids,
+                                        pAdjustMethod = "BH",
+                                        universe = keys(org.Hs.eg.db),
+                                        TERM2GENE = msigdbr_t2g)
+  GSE234933_Bpoor_pathways = enricher(gene = Bpoor_genes_ids,
+                                        pAdjustMethod = "BH",
+                                        universe = keys(org.Hs.eg.db),
+                                        TERM2GENE = msigdbr_t2g)
+  GSE234933_Brich_pathways_name = GSE234933_Brich_pathways$Description[1:nrow(GSE234933_Brich_pathways)]
+  GSE234933_Bpoor_pathways_name = GSE234933_Bpoor_pathways$Description[1:nrow(GSE234933_Bpoor_pathways)]
+  GSE234933_Brich_pathway_list[[ct]] = GSE234933_Brich_pathways
+  GSE234933_Bpoor_pathway_list[[ct]] = GSE234933_Bpoor_pathways
+  GSE234933_Brich_pathway_name_list[[ct]] = GSE234933_Brich_pathways_name
+  GSE234933_Bpoor_pathway_name_list[[ct]] = GSE234933_Bpoor_pathways_name
+}
+
+
+
+####### Create a data frame to store the results 
+GSE234933_Brich_pathway_df = data.frame(Pathway = as.character(),
+                                        AdjPval = as.numeric(),
+                                        GeneCount = as.numeric(),
+                                        CellType = as.character()
+                                        )
+for (i in 1:length(GSE234933_Brich_pathway_list)){
+  df_temp = data.frame(
+    Pathway = GSE234933_Brich_pathway_list[[i]]@result$Description,
+    AdjPval = GSE234933_Brich_pathway_list[[i]]@result$p.adjust,  
+    GeneCount = GSE234933_Brich_pathway_list[[i]]@result$Count, 
+    CellType = rep(cell_type_all[[i]],length(GSE234933_Brich_pathway_list[[i]]@result$Description))
+  )
+  GSE234933_Brich_pathway_df = rbind(GSE234933_Brich_pathway_df, df_temp)
+}
+
+GSE234933_Brich_pathway_df = GSE234933_Brich_pathway_df %>%
+  complete(Pathway, CellType, fill = list(AdjPval = 1, GeneCount = 0))
+GSE234933_Brich_pathway_df$`-Log10 p.adj` = -log10(GSE234933_Brich_pathway_df$AdjPval)
+GSE234933_Brich_pathway_df$Bratio = "Bhigh"
+
+GSE234933_Bpoor_pathway_df = data.frame(Pathway = as.character(),
+                                        AdjPval = as.numeric(),
+                                        GeneCount = as.numeric(),
+                                        CellType = as.character()
+                                        )
+for (i in 1:length(GSE234933_Bpoor_pathway_list)){
+  df_temp = data.frame(
+    Pathway = GSE234933_Bpoor_pathway_list[[i]]@result$Description,
+    AdjPval = GSE234933_Bpoor_pathway_list[[i]]@result$p.adjust,  
+    GeneCount = GSE234933_Bpoor_pathway_list[[i]]@result$Count, 
+    CellType = rep(cell_type_all[[i]],length(GSE234933_Bpoor_pathway_list[[i]]@result$Description))
+  )
+  GSE234933_Bpoor_pathway_df = rbind(GSE234933_Bpoor_pathway_df, df_temp)
+}
+
+GSE234933_Bpoor_pathway_df = GSE234933_Bpoor_pathway_df %>%
+  complete(Pathway, CellType, fill = list(AdjPval = 1, GeneCount = 0))
+GSE234933_Bpoor_pathway_df$`-Log10 p.adj` = -log10(GSE234933_Bpoor_pathway_df$AdjPval)
+GSE234933_Bpoor_pathway_df$Bratio = "Blow"
+
+
+master_keys = distinct(bind_rows(
+  select(GSE234933_Bpoor_pathway_df, Pathway, CellType),
+  select(GSE234933_Brich_pathway_df, Pathway, CellType)
+), Pathway, CellType)
+
+# Ensure both data frames include all combinations, filling missing rows with NAs
+GSE234933_Bpoor_pathway_df = merge(master_keys, GSE234933_Bpoor_pathway_df, by = c("Pathway", "CellType"), all.x = T)
+GSE234933_Brich_pathway_df = merge(master_keys, GSE234933_Brich_pathway_df, by = c("Pathway", "CellType"), all.x = T)
+
+GSE234933_Bpoor_pathway_df$AdjPval[is.na(GSE234933_Bpoor_pathway_df$AdjPval)] = 1
+GSE234933_Bpoor_pathway_df$GeneCount[is.na(GSE234933_Bpoor_pathway_df$GeneCount)] = 0
+GSE234933_Bpoor_pathway_df$`-Log10 p.adj`[is.na(GSE234933_Bpoor_pathway_df$`-Log10 p.adj`)] = 0
+GSE234933_Bpoor_pathway_df$Bratio[is.na(GSE234933_Bpoor_pathway_df$Bratio)] = "Blow"
+
+GSE234933_Brich_pathway_df$AdjPval[is.na(GSE234933_Brich_pathway_df$AdjPval)] = 1
+GSE234933_Brich_pathway_df$GeneCount[is.na(GSE234933_Brich_pathway_df$GeneCount)] = 0
+GSE234933_Brich_pathway_df$`-Log10 p.adj`[is.na(GSE234933_Brich_pathway_df$`-Log10 p.adj`)] = 0
+GSE234933_Brich_pathway_df$Bratio[is.na(GSE234933_Brich_pathway_df$Bratio)] = "Blow"
+
+
+conflict_vec = (GSE234933_Brich_pathway_df$AdjPval < p_adj_cutoff) & (GSE234933_Bpoor_pathway_df$AdjPval < p_adj_cutoff)
+sum(conflict_vec)
+GSE234933_Brich_pathway_df$AdjPval[conflict_vec] = 1
+GSE234933_Brich_pathway_df$GeneCount[conflict_vec] = 0
+GSE234933_Bpoor_pathway_df$AdjPval[conflict_vec] = 1
+GSE234933_Bpoor_pathway_df$GeneCount[conflict_vec] = 0
+
+
+GSE234933_pathway_df = rbind(GSE234933_Brich_pathway_df, GSE234933_Bpoor_pathway_df)
+GSE234933_pathway_df = GSE234933_pathway_df[GSE234933_pathway_df$AdjPval<p_adj_cutoff, ]
+
+summary_df = GSE234933_pathway_df %>%
+  group_by(Pathway, Bratio) %>%
+  summarise(Count = n(), .groups = "drop")
+# Reshape the data to wide format to prepare for difference calculation
+wide_df <- summary_df %>%
+  pivot_wider(names_from = Bratio, values_from = Count, values_fill = list(Count = 0))  # Fill missing values with 0
+wide_df <- wide_df %>%
+  mutate(Difference = `Bhigh` - `Blow`)
+
+GSE234933_pathway_df <- GSE234933_pathway_df %>%
+  complete(Pathway, CellType, fill = list(AdjPval = 1, GeneCount = 0, `-Log10 p.adj` = 0, Bratio = "Blow"))
+
+# Join this back to the original dataframe to add the Difference column
+GSE234933_pathway_df <- GSE234933_pathway_df %>%
+  left_join(wide_df %>% select(Pathway, Difference), by = "Pathway")
+GSE234933_pathway_df = GSE234933_pathway_df[order(-GSE234933_pathway_df$Difference), ]
+
+common_pathways = unique(GSE234933_pathway_df$Pathway)
+common_pathways = rev(common_pathways)
+
+# Plotting
+GSE234933_pathway_df$Pathway_number <- as.numeric(factor(GSE234933_pathway_df$Pathway, levels = common_pathways))
+GSE234933_pathway_df$CellType = factor(GSE234933_pathway_df$CellType, levels = cell_type_all)
+GSE234933_pathway_df$CellType_show <- ordered_cells_map[GSE234933_pathway_df$CellType]
+GSE234933_pathway_df$CellType_show = factor(GSE234933_pathway_df$CellType_show, levels = ordered_cells_show)
+
+GSE234933_pathway_df$Pathway <- as.character(pathways_mapping[GSE234933_pathway_df$Pathway])
+common_pathways = as.character(pathways_mapping[common_pathways])
+#### set dots of p >= p_adj_cutoff to be white
+GSE234933_pathway_df <- GSE234933_pathway_df %>%
+  mutate(ColorValue = ifelse(10^(-`-Log10 p.adj`) >= p_adj_cutoff, NA, pmin(max_logP_show, `-Log10 p.adj`)),
+         ColorGradient = ifelse(Bratio == "Bhigh", 
+                                rescale(ColorValue, to = c(0.5, 1)),  # Scale for 'Bhigh'
+                                rescale(ColorValue, to = c(0, 0.5))), # Scale for 'Blow'
+         FinalColor = ifelse(is.na(ColorGradient), "white", 
+                            ifelse(Bratio == "Bhigh", 
+                                   col_numeric(c("pink", "red"), domain = c(0.5, 1))(ColorGradient),
+                                   col_numeric(c("lightblue", "blue"), domain = c(0, 0.5))(ColorGradient))))
+sum(GSE234933_pathway_df$FinalColor == "white")
+p <- ggplot(GSE234933_pathway_df, aes(x = CellType_show, y = Pathway_number, size = GeneCount, color = FinalColor)) +
+  geom_point() +
+  scale_color_identity() +  
+  theme_minimal() +
+  labs(title = "", x = "", y = "") +
+  scale_y_continuous(breaks = 1:length(common_pathways), labels = common_pathways,
+                     limits = c(1, length(common_pathways)), expand = c(0.02, 0.02),
+                     sec.axis = sec_axis(~., breaks = 1:length(common_pathways), labels = common_pathways)) +
+  
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, color = "black"),
+        axis.title.y = element_text(face = "bold", margin = margin(0,20,0,0), size = rel(1.1), color = 'black'),
+        axis.title.x = element_text(hjust = 0.5, face = "bold", margin = margin(20,0,0,0), size = rel(1.1), color = 'black'),
+        axis.text.y = element_blank(),  
+        axis.ticks.y = element_blank(),  
+        axis.text.y.right = element_text(color = "black"),
+        panel.grid.minor = element_blank() 
+        , legend.position = "none"
+        )
+pdf(file = paste0(fig_dir, "Dotplot_pathwayEnrich_mergedMatrix_GSE234933_Bhigh_MSigDB.pdf"), width = 4.4*1.0, height = 6.5)
+
+print(p)
+dev.off()
+
+
+```
+
+
+# Figure S10E. extract common Reactome pathways 
+```{r}
+
+fig_dir = "../03.Results/Figures/"
+
+p_adj_cutoff = 0.01
+FC_cutoff = 0.2 
+max_logP_show = 40 # set 10^-max_logP_show as the min p value in dotplot display
+
+ordered_cells = c("Tumor cells", "Endothelial cells", "Fibroblasts", "Monocytes", "Macrophages", "Dendritic cells","Neutrophils", "Mast cells", "B cells", "T cells")
+ordered_cells_show = c("Tumor cells", "Endothelial cells", "Fibroblasts", "Monocytes", "Macrophages", "DC","Neutrophils", "Mast cells", "B cells", "T & NK cells")
+ordered_cells_map = setNames(ordered_cells_show, ordered_cells)
+cell_type_all = ordered_cells
+
+####### Bhigh vs Blow
+load(file = paste0(processed_dir,"Cells.markers_Bhigh_vs_Blow_GSE234933_3.RData")) 
+
+DEGs_Blow_GSE234933 = list()
+DEGs_Bhigh_GSE234933 = list()
+for (ct in cell_type_all){
+  print(paste(ct, "in processing ..."))
+  Cells.markers_GSE234933 = Cells.markers_Bhigh_vs_Blow_GSE234933[[ct]]
+  if (isEmpty(Cells.markers_GSE234933)){
+    DEGs_Blow_GSE234933[[ct]] = c("")
+    DEGs_Bhigh_GSE234933[[ct]] = c("")
+  }else{
+    DEGs_Blow_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==0 & Cells.markers_GSE234933$avg_log2FC> FC_cutoff & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+    DEGs_Bhigh_GSE234933[[ct]] = Cells.markers_GSE234933$gene[Cells.markers_GSE234933$cluster==1 & Cells.markers_GSE234933$avg_log2FC> FC_cutoff & Cells.markers_GSE234933$p_val_adj<p_adj_cutoff]
+  }
+}
+
+Cells.markers_Brich_list = DEGs_Bhigh_GSE234933[cell_type_all]
+Cells.markers_Bpoor_list = DEGs_Blow_GSE234933[cell_type_all]
+GSE234933_Brich_pathway_list = list()
+GSE234933_Brich_pathway_name_list = list()
+GSE234933_Bpoor_pathway_list = list()
+GSE234933_Bpoor_pathway_name_list = list()
+for (ct_i in 1:length(cell_type_all)){ 
+  ct = cell_type_all[ct_i]
+  print(paste(ct, "in processing..."))
+  Brich_genes = Cells.markers_Brich_list[[ct_i]]
+  Bpoor_genes = Cells.markers_Bpoor_list[[ct_i]]
+  Brich_genes_ids = mapIds(org.Hs.eg.db, keys = Brich_genes, column = "ENTREZID", keytype = "SYMBOL")
+  Bpoor_genes_ids = mapIds(org.Hs.eg.db, keys = Bpoor_genes, column = "ENTREZID", keytype = "SYMBOL")
+  ### reactome pathway
+  GSE234933_Brich_pathways = enrichPathway(gene = Brich_genes_ids, organism = "human") 
+  GSE234933_Bpoor_pathways = enrichPathway(gene = Bpoor_genes_ids, organism = "human") 
+  GSE234933_Brich_pathways_name = GSE234933_Brich_pathways$Description[1:nrow(GSE234933_Brich_pathways)]
+  GSE234933_Bpoor_pathways_name = GSE234933_Bpoor_pathways$Description[1:nrow(GSE234933_Bpoor_pathways)]
+  GSE234933_Brich_pathway_list[[ct]] = GSE234933_Brich_pathways
+  GSE234933_Bpoor_pathway_list[[ct]] = GSE234933_Bpoor_pathways
+  GSE234933_Brich_pathway_name_list[[ct]] = GSE234933_Brich_pathways_name
+  GSE234933_Bpoor_pathway_name_list[[ct]] = GSE234933_Bpoor_pathways_name
+}
+
+
+####### Create a data frame to store the results 
+GSE234933_Brich_pathway_df = data.frame(Pathway = as.character(),
+                                        AdjPval = as.numeric(),
+                                        GeneCount = as.numeric(),
+                                        CellType = as.character()
+                                        )
+for (i in 1:length(GSE234933_Brich_pathway_list)){
+  df_temp = data.frame(
+    Pathway = GSE234933_Brich_pathway_list[[i]]@result$Description,
+    AdjPval = GSE234933_Brich_pathway_list[[i]]@result$p.adjust,  
+    GeneCount = GSE234933_Brich_pathway_list[[i]]@result$Count, 
+    CellType = rep(cell_type_all[[i]],length(GSE234933_Brich_pathway_list[[i]]@result$Description))
+  )
+  GSE234933_Brich_pathway_df = rbind(GSE234933_Brich_pathway_df, df_temp)
+}
+
+
+GSE234933_Brich_pathway_df$`-Log10 p.adj` = -log10(GSE234933_Brich_pathway_df$AdjPval)
+GSE234933_Brich_pathway_df$Bratio = "Bhigh"
+GSE234933_Brich_pathway_df = GSE234933_Brich_pathway_df[GSE234933_Brich_pathway_df$AdjPval < p_adj_cutoff, ]
+dim(GSE234933_Brich_pathway_df)
+GSE234933_Brich_pathway_df = GSE234933_Brich_pathway_df[!duplicated(GSE234933_Brich_pathway_df[c("Pathway", "CellType")]), ] 
+
+
+GSE234933_Bpoor_pathway_df = data.frame(Pathway = as.character(),
+                                        AdjPval = as.numeric(),
+                                        GeneCount = as.numeric(),
+                                        CellType = as.character()
+                                        )
+for (i in 1:length(GSE234933_Bpoor_pathway_list)){
+  df_temp = data.frame(
+    Pathway = GSE234933_Bpoor_pathway_list[[i]]@result$Description,
+    AdjPval = GSE234933_Bpoor_pathway_list[[i]]@result$p.adjust,  
+    GeneCount = GSE234933_Bpoor_pathway_list[[i]]@result$Count, 
+    CellType = rep(cell_type_all[[i]],length(GSE234933_Bpoor_pathway_list[[i]]@result$Description))
+  )
+  GSE234933_Bpoor_pathway_df = rbind(GSE234933_Bpoor_pathway_df, df_temp)
+}
+
+GSE234933_Bpoor_pathway_df$`-Log10 p.adj` = -log10(GSE234933_Bpoor_pathway_df$AdjPval)
+GSE234933_Bpoor_pathway_df$Bratio = "Blow"
+GSE234933_Bpoor_pathway_df = GSE234933_Bpoor_pathway_df[GSE234933_Bpoor_pathway_df$AdjPval < p_adj_cutoff, ]
+dim(GSE234933_Bpoor_pathway_df)
+GSE234933_Bpoor_pathway_df = GSE234933_Bpoor_pathway_df[!duplicated(GSE234933_Bpoor_pathway_df[c("Pathway", "CellType")]), ] 
+
+
+master_keys = distinct(bind_rows(
+  select(GSE234933_Bpoor_pathway_df, Pathway, CellType),
+  select(GSE234933_Brich_pathway_df, Pathway, CellType)
+), Pathway, CellType)
+
+# Ensure both data frames include all combinations, filling missing rows with NAs
+GSE234933_Bpoor_pathway_df = merge(master_keys, GSE234933_Bpoor_pathway_df, by = c("Pathway", "CellType"), all.x = T)
+GSE234933_Brich_pathway_df = merge(master_keys, GSE234933_Brich_pathway_df, by = c("Pathway", "CellType"), all.x = T)
+
+GSE234933_Bpoor_pathway_df$AdjPval[is.na(GSE234933_Bpoor_pathway_df$AdjPval)] = 1
+GSE234933_Bpoor_pathway_df$GeneCount[is.na(GSE234933_Bpoor_pathway_df$GeneCount)] = 0
+GSE234933_Bpoor_pathway_df$`-Log10 p.adj`[is.na(GSE234933_Bpoor_pathway_df$`-Log10 p.adj`)] = 0
+GSE234933_Bpoor_pathway_df$Bratio[is.na(GSE234933_Bpoor_pathway_df$Bratio)] = "Blow"
+
+GSE234933_Brich_pathway_df$AdjPval[is.na(GSE234933_Brich_pathway_df$AdjPval)] = 1
+GSE234933_Brich_pathway_df$GeneCount[is.na(GSE234933_Brich_pathway_df$GeneCount)] = 0
+GSE234933_Brich_pathway_df$`-Log10 p.adj`[is.na(GSE234933_Brich_pathway_df$`-Log10 p.adj`)] = 0
+GSE234933_Brich_pathway_df$Bratio[is.na(GSE234933_Brich_pathway_df$Bratio)] = "Blow"
+
+
+conflict_vec = (GSE234933_Brich_pathway_df$AdjPval < p_adj_cutoff) & (GSE234933_Bpoor_pathway_df$AdjPval < p_adj_cutoff)
+sum(conflict_vec)
+GSE234933_Brich_pathway_df$AdjPval[conflict_vec] = 1
+GSE234933_Brich_pathway_df$GeneCount[conflict_vec] = 0
+GSE234933_Bpoor_pathway_df$AdjPval[conflict_vec] = 1
+GSE234933_Bpoor_pathway_df$GeneCount[conflict_vec] = 0
+
+
+GSE234933_pathway_df = rbind(GSE234933_Brich_pathway_df, GSE234933_Bpoor_pathway_df)
+GSE234933_pathway_df = GSE234933_pathway_df[GSE234933_pathway_df$AdjPval<p_adj_cutoff, ]
+
+summary_df = GSE234933_pathway_df %>%
+  group_by(Pathway, Bratio) %>%
+  summarise(Count = n(), .groups = "drop")
+# Reshape the data to wide format to prepare for difference calculation
+wide_df = summary_df %>%
+  pivot_wider(names_from = Bratio, values_from = Count, values_fill = list(Count = 0))  # Fill missing values with 0
+wide_df = wide_df %>%
+  mutate(Difference = `Bhigh` - `Blow`)
+
+GSE234933_pathway_df = GSE234933_pathway_df %>%
+  complete(Pathway, CellType, fill = list(AdjPval = 1, GeneCount = 0, `-Log10 p.adj` = 0, Bratio = "Blow"))
+
+# Join this back to the original dataframe to add the Difference column
+GSE234933_pathway_df = GSE234933_pathway_df %>%
+  left_join(wide_df %>% select(Pathway, Difference), by = "Pathway")
+GSE234933_pathway_df = GSE234933_pathway_df[order(-GSE234933_pathway_df$Difference), ]
+# keep only common pathways
+GSE234933_pathway_df = GSE234933_pathway_df[GSE234933_pathway_df$Difference>=5 | GSE234933_pathway_df$Difference <= -3, ]
+dim(GSE234933_pathway_df)
+
+common_pathways = unique(GSE234933_pathway_df$Pathway)
+common_pathways = rev(common_pathways)
+common_pathways_show = c("Translation", "rRNA processing in the nucleus and cytosol", "Response to elevated platelet cytosolic Ca2+", "Major pathway of rRNA processing in the\n  nucleolus and cytosol", "Influenza infection", "TNFR2 non-canonical NFKB pathway", "MHC class II antigen presentation", "IL1 signaling", "ER-phagosome pathway", "Endosomal/vacuolar pathway", "Costimulation by the CD28 family", "Antigen processing-cross presentation", "Antigen presentation: folding, assembly and\n  peptide loading of class I MHC", "Translocation of ZAP70 to immunological synapse", "Phosphorylation of CD3 and TCR zeta chains", "PD1 signaling", "IFN-alpha/beta signaling", "IFN signaling", "IFN-gamma signaling")
+
+common_pathways_map = setNames(common_pathways_show, common_pathways)
+GSE234933_pathway_df$Pathway_show = common_pathways_map[GSE234933_pathway_df$Pathway]
+
+common_pathways = common_pathways_show
+# Plotting
+GSE234933_pathway_df$Pathway_number = as.numeric(factor(GSE234933_pathway_df$Pathway_show, levels = common_pathways))
+GSE234933_pathway_df$CellType_show = ordered_cells_map[GSE234933_pathway_df$CellType]
+GSE234933_pathway_df$CellType_show = factor(GSE234933_pathway_df$CellType_show, levels = ordered_cells_show)
+
+#### set dots of p >= p_adj_cutoff to be white
+max(GSE234933_pathway_df$`-Log10 p.adj`[GSE234933_pathway_df$Bratio=="Bhigh"])
+max(GSE234933_pathway_df$`-Log10 p.adj`[GSE234933_pathway_df$Bratio=="Blow"])
+
+GSE234933_pathway_df = GSE234933_pathway_df %>%
+  mutate(ColorValue = ifelse(10^(-`-Log10 p.adj`) >= p_adj_cutoff, NA, pmin(max_logP_show, `-Log10 p.adj`)),
+         ColorGradient = ifelse(Bratio == "Bhigh", 
+                                rescale(ColorValue, to = c(0.5, 1)),  # Scale for 'Bhigh'
+                                rescale(ColorValue, to = c(0, 0.5))), # Scale for 'Blow'
+         FinalColor = ifelse(is.na(ColorGradient), "white", 
+                            ifelse(Bratio == "Bhigh", 
+                                   col_numeric(c("pink", "red"), domain = c(0.5, 1))(ColorGradient),
+                                   col_numeric(c("lightblue", "blue"), domain = c(0, 0.5))(ColorGradient))))
+p = ggplot(GSE234933_pathway_df, aes(x = CellType_show, y = Pathway_number, size = GeneCount, color = FinalColor)) +
+  geom_point() +
+  scale_color_identity() +  
+  theme_minimal() +
+  labs(title = "", x = "", y = "") +
+  scale_y_continuous(breaks = 1:length(common_pathways), labels = common_pathways,
+                     limits = c(1, length(common_pathways)), expand = c(0.02, 0.02),
+                     sec.axis = sec_axis(~., breaks = 1:length(common_pathways), labels = common_pathways)) +
+  
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, color = "black"),
+        axis.title.y = element_text(face = "bold", margin = margin(0,20,0,0), size = rel(1.1), color = 'black'),
+        axis.title.x = element_text(hjust = 0.5, face = "bold", margin = margin(20,0,0,0), size = rel(1.1), color = 'black'),
+        axis.text.y = element_blank(),  
+        axis.ticks.y = element_blank(),  
+        axis.text.y.right = element_text(color = "black"),
+        panel.grid.minor = element_blank()  
+        , legend.position = "none"
+        )
+pdf(file = paste0(fig_dir, "Dotplot_pathwayEnrich_mergedMatrix_GSE234933_Bhigh_Reactome.pdf"), width = 4.4*1.2, height = 6.5*0.9)
+print(p)
+dev.off()
+
+
+```

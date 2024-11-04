@@ -1,0 +1,150 @@
+---
+title: "IGHM is strongly correlated with IFN, antigen presentation, and classical complement pathway genes (Cohort1)"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Study relationship between expression of IGHM and IFN-II, IFN-I, MHCI/II, complement pathway genes on TCGA-HNSC
+
+
+# load required package
+```{r}
+library(ggplot2)
+library(glmnet)
+library(rlang)
+library(tibble)
+library(gridExtra)
+library(reshape2)
+
+```
+
+
+# set path
+```{r}
+
+# local
+data_dir <- "../02.Input/TCGA/TCGA_HNC/"
+fig_dir = "../03.Results/Figures/"
+result_fig_dir = fig_dir
+
+```
+
+# load data  
+```{r}
+
+###### gene expression data
+geneExpr_TCGA_HNSC = read.table(file =paste0(data_dir, "TPM/TCGA_HNSC_geneExpr_TPM_tumor.txt"), header = T, sep = "\t")
+geneExpr_TCGA_HNSC = geneExpr_TCGA_HNSC[!grepl("^ENSG", rownames(geneExpr_TCGA_HNSC)), ]
+geneExpr_df = log1p(geneExpr_TCGA_HNSC)
+
+###### HPV infection data
+clinicInfo_TCGA_HNSC = read.table(file =paste0(data_dir, "ClinicalInfo/TCGA_HNSC_clinicalInfo_all.txt"), header = T, sep = "\t")
+clinicInfo_TCGA_HNSC = clinicInfo_TCGA_HNSC[c("SampleID", "Subtype")]
+clinicInfo_TCGA_HNSC = na.omit(clinicInfo_TCGA_HNSC)
+clinicInfo_TCGA_HNSC$SampleID = gsub("-","\\.", clinicInfo_TCGA_HNSC$SampleID)
+
+HPVpos_samples = clinicInfo_TCGA_HNSC$SampleID[clinicInfo_TCGA_HNSC$Subtype == "HNSC_HPV+"]
+HPVneg_samples = clinicInfo_TCGA_HNSC$SampleID[clinicInfo_TCGA_HNSC$Subtype == "HNSC_HPV-"]
+
+```
+
+# Figure S14A. barplot of correlations
+```{r}
+
+HPV = "pos" # pos neg 
+test_genes_X = c("CD19", "IGHM","IGHD", "IGHG1","IGHG2","IGHG3","IGHG4", "IGHA1","IGHA2")
+test_Y = "IFN1" # IFNG IFN1 MHCI MHCII Complement CR
+
+MHCI = c("HLA-A", "HLA-B", "HLA-C", "B2M", "TAP1", "TAP2", "TAPBP") # PMID: 34019806
+MHCII = c("HLA-DRA", "HLA-DRB1", "HLA-DQA1", "HLA-DQB1", "HLA-DPA1", "HLA-DPB1", "HLA-DMA", "HLA-DMB", "CIITA") # PMID: 34019806
+IFNG = c("IFNG", "IFNGR1", "IFNGR2", "JAK1", "JAK2", "STAT1", "IRF1") 
+IFN1 = c("IFNA1","IFNB1", "IFNAR1", "IFNAR2", "TYK2", "STAT2", "IRF9")
+Complement = c("C1QA", "C1QB", "C1QC", "C1R", "C1S", "C2", "C3","C4A","C5") 
+CR = c("CR1", "CR2", "ITGAM","ITGB2","ITGAX", "VSIG4","C3AR1", "C5AR1") 
+
+test_genes_Y_list = list("MHCI" = MHCI,
+                         "MHCII" = MHCII,
+                         "IFNG" = IFNG,
+                         "IFN1" = IFN1,
+                         "Complement" = Complement,
+                         "CR" = CR)
+
+test_genes_Y = test_genes_Y_list[[test_Y]]
+
+if (HPV == "pos"){
+  geneExpr_TCGA_HNSC_temp = geneExpr_TCGA_HNSC[colnames(geneExpr_TCGA_HNSC) %in% HPVpos_samples]
+}else if (HPV == "neg"){
+  geneExpr_TCGA_HNSC_temp = geneExpr_TCGA_HNSC[colnames(geneExpr_TCGA_HNSC) %in% HPVneg_samples]
+}else{
+  geneExpr_TCGA_HNSC_temp = geneExpr_TCGA_HNSC
+}
+
+result_df <- data.frame()
+for (tg1 in test_genes_X) {
+  tg1_cor_vec <- c()
+  for (tg2 in test_genes_Y) {
+    pcc <- cor(as.numeric(geneExpr_TCGA_HNSC_temp[tg1, ]), as.numeric(geneExpr_TCGA_HNSC_temp[tg2, ]), method = "spearman")
+    tg1_cor_vec <- c(tg1_cor_vec, pcc)
+  }
+  result_df <- rbind(result_df, setNames(data.frame(t(tg1_cor_vec)), test_genes_Y))
+}
+rownames(result_df) <- test_genes_X
+colnames(result_df) <- test_genes_Y
+
+################## barplot
+# Calculate means and standard deviations for each row
+means <- rowMeans(result_df, na.rm = TRUE)
+sds <- apply(result_df, 1, sd, na.rm = TRUE)
+
+# Create a data frame for plotting
+plot_data <- data.frame(
+  group = rownames(result_df),
+  mean = means,
+  sd = sds
+)
+plot_data$group = factor(plot_data$group, levels = plot_data$group)
+result_df$group = rownames(result_df)
+scatter_data <- melt(result_df, id.vars = "group")
+
+# Create the bar plot with error bars
+pdf(file = paste0(fig_dir, "Bar_TCGA_HNSC_",HPV,"_IGHM_",test_Y,"_cor.pdf"),height = 1.6*1.4, width = 1.5*1.4) 
+ggplot(plot_data, aes(x = group, y = mean)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.2) +
+  geom_jitter(data = scatter_data, aes(x = group, y = value), width = 0.2, size = 0.8, alpha = 0.5) +
+  labs(x = "", y = "SCC") +
+  theme(panel.grid = element_blank(), 
+        panel.border = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(angle = 90, hjust = 1, color="black"),
+        legend.position = "none"
+        )
+dev.off()
+
+```
+

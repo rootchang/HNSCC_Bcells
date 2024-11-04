@@ -1,0 +1,740 @@
+---
+title: "Predictive power comparison of established signatures, B cell abundance, IGHM, and other related genes."
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+# Aims:
+
+- Compare ICB predictive power of established signatures, B cell abundance, IGHM, and other related genes.
+
+
+# load packages
+```{r, include=FALSE}
+# load required package
+
+library(openxlsx)
+library(UCell)
+library(readxl)
+library("readr")
+
+library(gridExtra)
+
+library(pROC)
+library("verification")
+
+library(survival)
+library(survminer)
+
+library(forestplot)
+
+library(GSVA)
+
+library(org.Hs.eg.db)
+library(readxl)
+library(openxlsx)
+
+library(reshape2)
+library(tidyr)
+
+```
+
+# set the color scale
+```{r}
+
+my.cols <- c("#1c4f27", "#81144e", "#79831e", "#00305d", "#9c1915", "black", "grey", "#f58231", "#e6194b", "#3cb44b", "#42d4f4") 
+
+```
+
+
+# local path
+```{r}
+
+data_dir <- "../02.Input/"
+result_dir <- "../03.Results/Data/"
+result_fig_dir <- "../03.Results/Figures/"
+
+```
+
+# common functions and constants
+```{r}
+
+# Define the function to calculate IMPRES scores
+calculate_IMPRES <- function(geneExpr, gene_pairs) {
+  IMPRES_scores <- data.frame(Sample = colnames(geneExpr), IMPRES = numeric(ncol(geneExpr)))
+  for (i in 1:ncol(geneExpr)) {
+    sample_expr <- geneExpr[, i, drop = FALSE]
+    score <- sum(sapply(1:length(gene_pairs$Gene1), function(j) {
+      gene1 <- gene_pairs$Gene1[j]
+      gene2 <- gene_pairs$Gene2[j]
+      if ((gene1 %in% rownames(geneExpr)) & (gene2 %in% rownames(geneExpr))) {
+        as.numeric(sample_expr[gene1, ] > sample_expr[gene2, ])
+      } else {
+        NA  # If either gene is missing, return NA
+      }
+    }), na.rm = TRUE)  # Sum the comparisons, ignoring NAs
+    IMPRES_scores$IMPRES[i] <- score
+  }
+  return(IMPRES_scores)
+}
+
+
+#### signatures (sum(log1p))
+cyt_genes = c("PRF1", "GZMA")
+exh_genes = c("PDCD1", "CTLA4", "LAG3", "HAVCR2", "TIGIT")
+IFNr_genes = c("IDO1", "CXCL10", "CXCL9", "HLA-DRA", "STAT1", "IFNG")
+TLS_genes = c("BCL6", "CD86", "CXCR4", "LAMP3", "SELL", "CCR7", "CXCL13", "CCL21", "CCL19")
+IRG_genes = c("CD3D", "IDO1", "CIITA", "CD3E", "CCL5", "GZMK", "CD2", "HLA-DRA", "CXCL13", "IL2RG", "NKG7", "HLA-E", "CXCR6", "LAG3", "TAGAP", "CXCL10", "STAT1", "GZMB") # immune-related gene signature (Tcell inf GEP; Ayers 2017 JCI)
+
+IMPRES_gene_pairs = list(
+  Gene1 = c("PDCD1", "CD27", "CTLA4", "CD40", "CD86", "CD28", "CD80", "CD274", "CD86", "CD40", "CD86", "CD40", "CD28", "CD40", "TNFRSF14"),
+  Gene2 = c("TNFSF4", "PDCD1", "TNFSF4", "CD28", "TNFSF4", "CD86", "TNFSF9", "VSIR", "HAVCR2", "PDCD1", "CD200", "CD80", "CD276", "CD274", "CD86")
+)
+
+test_genes_Bcell = c("CD19", "IGHM","IGHD", "IGHG1","IGHG2","IGHG3","IGHG4", "IGHA1","IGHA2")
+MHCI = c("HLA-A", "HLA-B", "HLA-C", "B2M", "TAP1", "TAP2", "TAPBP") # PMID: 34019806
+MHCII = c("HLA-DRA", "HLA-DRB1", "HLA-DQA1", "HLA-DQB1", "HLA-DPA1", "HLA-DPB1", "HLA-DMA", "HLA-DMB", "CIITA") # PMID: 34019806
+IFNG = c("IFNG", "IFNGR1", "IFNGR2", "JAK1", "JAK2", "STAT1", "IRF1")
+IFN1 = c("IFNA1","IFNB1", "IFNAR1", "IFNAR2", "TYK2", "STAT2", "IRF9") 
+Complement = c("C1QA", "C1QB", "C1QC", "C1R", "C1S", "C2", "C3","C4A","C5")
+CR = c("CR1", "CR2", "ITGAM","ITGB2","ITGAX", "VSIG4","C3AR1", "C5AR1") 
+Others = c("PTGS2", "SPP1", "CXCL9")
+
+
+test_genes = unique(c(test_genes_Bcell, MHCI, MHCII, IFNG, IFN1, Complement, CR, Others))
+
+all_signatures0 = c("B cells", "CXCL9/SPP1", "CD8T/Treg", "Cyt", "Exh", "IFNr", "TLS", "Tcell inf GEP", "CXCL13+CD8T", "CD39+CD8T", "TMB", "PD-L1 CPS", "Hemoglobin", "Albumin", "NLR", "Platelets", "MSI", "FCNA", "HLA LOH", "HED", "KLRG1-PD1+CD8T", "Monocytes/Lymphocytes", "TIDE", "IMPRES")
+
+all_signatures = c(all_signatures0, test_genes)
+
+```
+
+# process data 
+```{r}
+
+all_info_list = list()
+
+###################################### load data (Cohort9) ######################################
+MSK_data_raw = read.xlsx("../02.Input/MSKCC_HNC/MSK_full.xlsx", sheet = "Sheet1", rowNames = T)
+feature_all = colnames(MSK_data_raw)[c(6:9,11:14,17)+1]
+all_info = MSK_data_raw[c(feature_all, "Response.(1:Responder;.0:Non-responder)")]
+feature_all_plotString = c("NLR", "Platelets", "Hemoglobin", "Albumin", "TMB", "FCNA", "HED", "HLA LOH", "MSI")
+colnames(all_info) = c(feature_all_plotString, "ICBR")
+all_info <- data.frame(lapply(all_info, as.numeric), check.names = F)
+feature_all = colnames(all_info)[1:9]
+non_exist_feautures = setdiff(all_signatures, feature_all)
+all_info[non_exist_feautures] = NA
+all_info_list[["Cohort9"]] = all_info
+
+
+
+###################################### load data (Cohort10) ######################################
+gene_expr_df = read.csv(file = "../02.Input/MSK/Morris_TPM.csv", header = T, row.names = 1)
+############### deconvolution
+Morris_ICF_df = read.csv("../02.Input/MSK/Morris_Kassandra_deconvolution_result.csv", row.names = 1, check.names = F)
+Morris_ICF_df$Sample = rownames(Morris_ICF_df)
+Morris_ICF_df$`B cells` = Morris_ICF_df$B_cells
+Morris_ICF_df$B_cells = NULL
+Morris_ICF_df$`CD8T/Treg` = Morris_ICF_df$CD8_T_cells / (Morris_ICF_df$Tregs+0.000001)
+
+# gene expression values and signature scores
+signatures_df = data.frame(t(gene_expr_df[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$`CXCL9/SPP1` = signatures_df$CXCL9/(signatures_df$SPP1 + 0.000001)
+signatures_df$Cyt =  as.numeric(colSums(log1p(gene_expr_df[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(gene_expr_df[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(gene_expr_df[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(gene_expr_df[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(gene_expr_df[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample = rownames(signatures_df)
+
+############# load TIDE score
+Morris_TIDE_df = read.table("../02.Input/MSK/TIDE_Morris.txt", row.names = 1, header = T, sep = "\t")
+Morris_TIDE_df$Sample = rownames(Morris_TIDE_df)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(gene_expr_df, IMPRES_gene_pairs)
+
+signatures_df = merge(signatures_df, Morris_ICF_df[c("Sample", "B cells", "CD8T/Treg")], by = "Sample")
+signatures_df = merge(signatures_df, Morris_TIDE_df[c("Sample", "TIDE")], by = "Sample")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample", "IMPRES")], by = "Sample")
+
+####### response information
+clincal_info_df = read.xlsx("../02.Input/MSK/HN_preIO_RNAseq_Clinical data for nci.xlsx", sheet = "HN_Illumina.Sample_Info")
+clincal_info_df$ICBR = 0
+clincal_info_df$ICBR[clincal_info_df$BEST_RESPONSE %in% c("CR", "PR")] = 1
+
+all_info = merge(signatures_df, clincal_info_df[c("Sample", "ICBR")], by = "Sample")
+non_exist_feautures = setdiff(all_signatures, colnames(all_info))
+all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort10"]] = all_info
+
+
+
+
+###################################### load data (Cohort4) ######################################
+##### gene expression: Cohort4
+NCT02296684_geneExpr_TPM = read.table("../02.Input/NCT02296684/TPM.expression", header = T, sep="\t") 
+##### Kassandra deconvolution
+NCT02296684_ICF_df = read.csv("../02.Input/NCT02296684/ICFs_Deconvolution_Kassandra_result.tsv",header=T, sep="\t",row.names = 1)
+NCT02296684_ICF_df = data.frame(t(NCT02296684_ICF_df))
+NCT02296684_ICF_df$`B cells` = NCT02296684_ICF_df$B_cells
+NCT02296684_ICF_df$B_cells = NULL
+NCT02296684_ICF_df$`CD8T/Treg` = NCT02296684_ICF_df$CD8_T_cells / (NCT02296684_ICF_df$Tregs+0.000001)
+NCT02296684_ICF_df$PatientID = gsub("\\..*","",rownames(NCT02296684_ICF_df))
+NCT02296684_ICF_df$PatientID = gsub("X","",NCT02296684_ICF_df$PatientID)
+NCT02296684_ICF_df$PatientID = as.numeric(NCT02296684_ICF_df$PatientID)
+NCT02296684_ICF_df$Sample = rownames(NCT02296684_ICF_df)
+
+signatures_df = data.frame(t(NCT02296684_geneExpr_TPM[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$`CXCL9/SPP1` = signatures_df$CXCL9/(signatures_df$SPP1 + 0.000001)
+signatures_df$Cyt =  as.numeric(colSums(log1p(NCT02296684_geneExpr_TPM[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(NCT02296684_geneExpr_TPM[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(NCT02296684_geneExpr_TPM[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(NCT02296684_geneExpr_TPM[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(NCT02296684_geneExpr_TPM[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample = rownames(signatures_df)
+
+############# load TIDE score
+NCT02296684_TIDE_df = read.table("../02.Input/NCT02296684/TIDE_NCT02296684.txt", row.names = 1, header = T, sep = "\t")
+NCT02296684_TIDE_df$Sample = rownames(NCT02296684_TIDE_df)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(NCT02296684_geneExpr_TPM, IMPRES_gene_pairs)
+
+signatures_df = merge(signatures_df, NCT02296684_ICF_df[c("Sample", "B cells", "CD8T/Treg")], by = "Sample")
+signatures_df = merge(signatures_df, NCT02296684_TIDE_df[c("Sample", "TIDE")], by = "Sample")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample", "IMPRES")], by = "Sample")
+signatures_df$PatientID = gsub("\\..*", "", signatures_df$Sample)
+signatures_df$PatientID = gsub("X", "", signatures_df$PatientID)
+
+####### response information
+clinicInfo_NCT02296684 = read.csv("../02.Input/NCT02296684/phs001623_all_info.csv",header=T,row.names = NULL)
+clinicInfo_NCT02296684 = clinicInfo_NCT02296684[c("Patient.ID", "Pathologic.response..Yes.No.")]
+colnames(clinicInfo_NCT02296684) = c("PatientID", "ICBR")
+clinicInfo_NCT02296684$ICBR[clinicInfo_NCT02296684$ICBR %in% c("No")] = 0
+clinicInfo_NCT02296684$ICBR[clinicInfo_NCT02296684$ICBR=="Yes"] = 1
+clinicInfo_NCT02296684$ICBR = as.numeric(clinicInfo_NCT02296684$ICBR)
+clinicInfo_NCT02296684 <- clinicInfo_NCT02296684[!duplicated(clinicInfo_NCT02296684$PatientID), ]
+
+all_info = merge(signatures_df, clinicInfo_NCT02296684, by = "PatientID", x.all = F)
+all_info$PatientID = NULL
+non_exist_feautures = setdiff(all_signatures, colnames(all_info))
+all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort4"]] = all_info
+
+
+
+
+###################################### load data (Cohort6) ######################################
+### gene expression
+GSE234933_geneExpr_TPM = read.csv('../02.Input/GSE234933/GSE234933_pseudobulk_TPM_AllCells.csv', header=TRUE, row.names = 1)
+### load cell abundance
+GSE234933_ICF_df = read.csv("../02.Input/GSE234933/GSE234933_Tissue_CellProportions_withTumorCells.csv",header=T, row.names = 1)
+GSE234933_ICF_df$`B cells` = GSE234933_ICF_df$B_cells
+GSE234933_ICF_df$B_cells = NULL
+GSE234933_ICF_df$Sample = rownames(GSE234933_ICF_df)
+
+### cell proportion signatures
+GSE234933_cellProp_sigs = read.csv('../02.Input/GSE234933/Tissue_cellProportion_ICB_signatures.csv', header=TRUE, row.names = 1)
+GSE234933_cellProp_sigs$Sample = rownames(GSE234933_cellProp_sigs)
+GSE234933_cellProp_sigs$`CXCL13+CD8T` = GSE234933_cellProp_sigs$CXCL13CD8T_Ratio
+GSE234933_cellProp_sigs$`CD39+CD8T` = GSE234933_cellProp_sigs$CD39CD8T_Ratio
+GSE234933_cellProp_sigs$`CD8T/Treg` = GSE234933_cellProp_sigs$CD8T_Tregs_Ratio
+GSE234933_cellProp_sigs$`CXCL9/SPP1` = GSE234933_cellProp_sigs$CXCL9M_SPP1M_Ratio 
+
+signatures_df = data.frame(t(GSE234933_geneExpr_TPM[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$Cyt =  as.numeric(colSums(log1p(GSE234933_geneExpr_TPM[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(GSE234933_geneExpr_TPM[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(GSE234933_geneExpr_TPM[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(GSE234933_geneExpr_TPM[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(GSE234933_geneExpr_TPM[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample = rownames(signatures_df)
+signatures_df$Sample = gsub("\\.","-",signatures_df$Sample)
+
+############# load TIDE score
+GSE234933_TIDE_df = read.table("../02.Input/GSE234933/TIDE_GSE234933.txt", row.names = 1, header = T, sep = "\t")
+GSE234933_TIDE_df$Sample = rownames(GSE234933_TIDE_df)
+GSE234933_TIDE_df$Sample = gsub("\\.","-",GSE234933_TIDE_df$Sample)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(GSE234933_geneExpr_TPM, IMPRES_gene_pairs)
+IMPRES_score_df$Sample = gsub("\\.","-",IMPRES_score_df$Sample)
+
+signatures_df = merge(signatures_df, GSE234933_ICF_df[c("Sample", "B cells")], by = "Sample")
+signatures_df = merge(signatures_df, GSE234933_cellProp_sigs[c("Sample", "CXCL13+CD8T", "CD39+CD8T", "CD8T/Treg", "CXCL9/SPP1")], by = "Sample")
+signatures_df = merge(signatures_df, GSE234933_TIDE_df[c("Sample", "TIDE")], by = "Sample")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample", "IMPRES")], by = "Sample")
+
+####### response information
+GSE234933_clinicalInfo_df = read.csv('../02.Input/GSE234933/GSE234933_Clinical_Info.csv', header=TRUE, row.names = 1)
+GSE234933_clinicalInfo_df$Sample = rownames(GSE234933_clinicalInfo_df)
+GSE234933_clinicalInfo_df = GSE234933_clinicalInfo_df[c("Sample","ICB_response2")]
+colnames(GSE234933_clinicalInfo_df) = c("Sample","ICBR")
+
+all_info = merge(signatures_df, GSE234933_clinicalInfo_df[c("Sample", "ICBR")], by = "Sample", x.all = F)
+all_info = all_info[!is.na(all_info$ICBR),]
+non_exist_feautures = setdiff(all_signatures, colnames(all_info))
+all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort6"]] = all_info
+
+
+
+
+###################################### load data (Cohort7 PBMC and Tissue) ######################################
+####### response information
+GSE200996_clinicalInfo_df = read.csv('../02.Input/GSE200996/GSE200996_PatientOutcome.csv', header=TRUE, row.names = 1)
+GSE200996_clinicalInfo_df$Sample = rownames(GSE200996_clinicalInfo_df)
+GSE200996_clinicalInfo_df$Patho_R = GSE200996_clinicalInfo_df[,'Pathological.response..'] # continuous variable
+GSE200996_clinicalInfo_df$Patho_minR = (GSE200996_clinicalInfo_df$Patho_R>=10)+0
+GSE200996_clinicalInfo_df = GSE200996_clinicalInfo_df[c("Sample", "Patho_minR")]
+colnames(GSE200996_clinicalInfo_df) = c("Sample", "ICBR")
+
+######## PBMC ######## 
+### PBMC ICF
+GSE200996_PBMC_ICF_df = read.csv('../02.Input/GSE200996/GSE200996_PBMC_CellProportions_L2.csv', header=TRUE, row.names = 1, check.names = F) 
+colnames(GSE200996_PBMC_ICF_df) = paste0(colnames(GSE200996_PBMC_ICF_df), "_PBMC")
+GSE200996_PBMC_ICF_df$`B cells` = GSE200996_PBMC_ICF_df$B_PBMC
+GSE200996_PBMC_ICF_df$`Monocytes/Lymphocytes` = (GSE200996_PBMC_ICF_df$Monocytes_PBMC)/(GSE200996_PBMC_ICF_df$T_NK_PBMC + GSE200996_PBMC_ICF_df$B_PBMC + 0.000001)
+GSE200996_PBMC_ICF_df$Sample2 = rownames(GSE200996_PBMC_ICF_df)
+GSE200996_PBMC_ICF_df$Sample = gsub("-B.*","",GSE200996_PBMC_ICF_df$Sample2)
+GSE200996_PBMC_ICF_df$Sample2 = gsub("-","\\.",GSE200996_PBMC_ICF_df$Sample2)
+GSE200996_PBMC_ICF_df = GSE200996_PBMC_ICF_df[c("Sample", "Sample2", "B cells", "Monocytes/Lymphocytes")]
+
+GSE200996_PBMC_ICF_L3_df = read.csv('../02.Input/GSE200996/PBMC_CellProportions_L3.csv', header=TRUE, row.names = 1, check.names = F) 
+GSE200996_PBMC_ICF_L3_df$`CD8T/Treg` = GSE200996_PBMC_ICF_L3_df$CD8T/(GSE200996_PBMC_ICF_L3_df$Tregs + 0.000001)
+GSE200996_PBMC_ICF_L3_df$Sample2 = gsub("-","\\.",rownames(GSE200996_PBMC_ICF_L3_df))
+
+GSE200996_PBMCsig_df = read.csv('../02.Input/GSE200996/PBMC_cellProportion_ICB_signatures.csv', header=TRUE, row.names = 1)
+GSE200996_PBMCsig_df$`KLRG1-PD1+CD8T` = GSE200996_PBMCsig_df$KLRG1PD1CD8T_Ratio
+GSE200996_PBMCsig_df$Sample2 = gsub("-","\\.",rownames(GSE200996_PBMCsig_df))
+
+### PBMC gene expr.
+GSE200996_PBMC_geneExp_TPM = read.csv('../02.Input/GSE200996/GSE200996_pseudobulk_TPM_AllCells_PBMC.csv', header=TRUE, row.names = 1) 
+
+signatures_df = data.frame(t(GSE200996_PBMC_geneExp_TPM[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$Cyt =  as.numeric(colSums(log1p(GSE200996_PBMC_geneExp_TPM[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(GSE200996_PBMC_geneExp_TPM[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(GSE200996_PBMC_geneExp_TPM[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(GSE200996_PBMC_geneExp_TPM[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(GSE200996_PBMC_geneExp_TPM[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample2 = rownames(signatures_df)
+
+############# load TIDE score
+GSE200996_TIDE_df = read.table("../02.Input/GSE200996/TIDE_GSE200996_PBMC.txt", row.names = 1, header = T, sep = "\t")
+GSE200996_TIDE_df$Sample2 = rownames(GSE200996_TIDE_df)
+GSE200996_TIDE_df$Sample2 = gsub("-", "\\.",GSE200996_TIDE_df$Sample2)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(GSE200996_PBMC_geneExp_TPM, IMPRES_gene_pairs)
+IMPRES_score_df$Sample2 = IMPRES_score_df$Sample
+IMPRES_score_df$Sample = NULL
+
+signatures_df = merge(signatures_df, GSE200996_PBMC_ICF_df[c("Sample", "Sample2", "B cells", "Monocytes/Lymphocytes")], by = "Sample2")
+signatures_df = merge(signatures_df, GSE200996_PBMC_ICF_L3_df[c("Sample2", "CD8T/Treg")], by = "Sample2")
+signatures_df = merge(signatures_df, GSE200996_PBMCsig_df[c("Sample2", "KLRG1-PD1+CD8T")], by = "Sample2")
+signatures_df = merge(signatures_df, GSE200996_TIDE_df[c("Sample2", "TIDE")], by = "Sample2")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample2", "IMPRES")], by = "Sample2")
+
+all_info = merge(signatures_df, GSE200996_clinicalInfo_df, by = "Sample", x.all = T)
+all_info$Sample2 = NULL
+all_info = all_info[!is.na(all_info$ICBR),]
+non_exist_feautures = setdiff(all_signatures, colnames(all_info))
+all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort7_PBMC"]] = all_info
+
+
+######### Tissue ###### 
+### Tissue ICF
+GSE200996_Tissue_ICF_df = read.csv('../02.Input/GSE200996/GSE200996_Tissue_CellProportions_L2.csv', header=TRUE, row.names = 1) 
+colnames(GSE200996_Tissue_ICF_df) = paste0(colnames(GSE200996_Tissue_ICF_df), "_Tissue")
+GSE200996_Tissue_ICF_df$`B cells` = GSE200996_Tissue_ICF_df$B_Tissue
+GSE200996_Tissue_ICF_df$Sample2 = rownames(GSE200996_Tissue_ICF_df)
+GSE200996_Tissue_ICF_df$Sample = gsub("_.*","",GSE200996_Tissue_ICF_df$Sample2)
+GSE200996_Tissue_ICF_df = GSE200996_Tissue_ICF_df[c("Sample", "Sample2", "B cells")]
+
+### cell proportion signatures
+GSE200996_cellProp_sigs = read.csv('../02.Input/GSE200996/Tissue_cellProportion_ICB_signatures.csv', header=TRUE, row.names = 1)
+GSE200996_cellProp_sigs$Sample2 = rownames(GSE200996_cellProp_sigs)
+GSE200996_cellProp_sigs$`CXCL13+CD8T` = GSE200996_cellProp_sigs$CXCL13CD8T_Ratio
+GSE200996_cellProp_sigs$`CD39+CD8T` = GSE200996_cellProp_sigs$CD39CD8T_Ratio
+GSE200996_cellProp_sigs$`CD8T/Treg` = GSE200996_cellProp_sigs$CD8T_Tregs_Ratio
+GSE200996_cellProp_sigs$`CXCL9/SPP1` = GSE200996_cellProp_sigs$CXCL9M_SPP1M_Ratio 
+
+### Tissue gene expr.
+GSE200996_Tissue_geneExp_TPM = read.csv('../02.Input/GSE200996/GSE200996_pseudobulk_TPM_AllCells_Tissue.csv', header=TRUE, row.names = 1) 
+
+signatures_df = data.frame(t(GSE200996_Tissue_geneExp_TPM[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$Cyt =  as.numeric(colSums(log1p(GSE200996_Tissue_geneExp_TPM[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(GSE200996_Tissue_geneExp_TPM[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(GSE200996_Tissue_geneExp_TPM[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(GSE200996_Tissue_geneExp_TPM[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(GSE200996_Tissue_geneExp_TPM[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample2 = rownames(signatures_df)
+
+############# load TIDE score
+GSE200996_TIDE_df = read.table("../02.Input/GSE200996/TIDE_GSE200996_Tissue.txt", row.names = 1, header = T, sep = "\t")
+GSE200996_TIDE_df$Sample2 = rownames(GSE200996_TIDE_df)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(GSE200996_Tissue_geneExp_TPM, IMPRES_gene_pairs)
+IMPRES_score_df$Sample2 = IMPRES_score_df$Sample
+IMPRES_score_df$Sample = NULL
+
+signatures_df = merge(signatures_df, GSE200996_Tissue_ICF_df[c("Sample", "Sample2", "B cells")], by = "Sample2")
+signatures_df = merge(signatures_df, GSE200996_cellProp_sigs, by = "Sample2")
+signatures_df = merge(signatures_df, GSE200996_TIDE_df[c("Sample2", "TIDE")], by = "Sample2")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample2", "IMPRES")], by = "Sample2")
+
+all_info = merge(signatures_df, GSE200996_clinicalInfo_df, by = "Sample", x.all = T)
+all_info$Sample2 = NULL
+all_info = all_info[!is.na(all_info$ICBR),]
+non_exist_feautures = setdiff(all_signatures, colnames(all_info))
+all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort7_Tissue"]] = all_info
+
+
+
+
+###################################### load data (Cohort5 scRNAseq) ######################################
+# gene Expr
+GSE232240_geneExpr_TPM = read.csv(file = "../02.Input/GSE232240/GSE232240_Tissue_pseudobulk_TPM_AllCells.txt", header = T, row.names = 1)
+### load cell abundance
+GSE232240_ICF_df = read.csv("../02.Input/GSE232240/Tissue_CellProportions.csv",header=T, row.names = 1)
+GSE232240_ICF_df$`B cells` = GSE232240_ICF_df$B
+GSE232240_ICF_df$Sample = rownames(GSE232240_ICF_df)
+GSE232240_ICF_df$Sample2 = gsub("_.*", "", GSE232240_ICF_df$Sample)
+
+### cell proportion signatures
+GSE232240_cellProp_sigs = read.csv('../02.Input/GSE232240/Tissue_cellProportion_ICB_signatures.csv', header=TRUE, row.names = 1)
+GSE232240_cellProp_sigs$Sample = rownames(GSE232240_cellProp_sigs)
+GSE232240_cellProp_sigs$`CXCL13+CD8T` = GSE232240_cellProp_sigs$CXCL13CD8T_Ratio
+GSE232240_cellProp_sigs$`CD39+CD8T` = GSE232240_cellProp_sigs$CD39CD8T_Ratio
+GSE232240_cellProp_sigs$`CD8T/Treg` = GSE232240_cellProp_sigs$CD8T_Tregs_Ratio
+GSE232240_cellProp_sigs$`CXCL9/SPP1` = GSE232240_cellProp_sigs$CXCL9M_SPP1M_Ratio 
+
+signatures_df = data.frame(t(GSE232240_geneExpr_TPM[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$Cyt =  as.numeric(colSums(log1p(GSE232240_geneExpr_TPM[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(GSE232240_geneExpr_TPM[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(GSE232240_geneExpr_TPM[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(GSE232240_geneExpr_TPM[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(GSE232240_geneExpr_TPM[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample = rownames(signatures_df)
+signatures_df$Sample = gsub("\\.","_",signatures_df$Sample)
+
+### TMB and PD-L1 signatures
+GSE232240_TMB_sigs = read_excel("../02.Input/GSE232240/Bulk_deconvolution_ICBresponse.xlsx", sheet = "all_info")
+GSE232240_TMB_sigs$TMB = GSE232240_TMB_sigs$`Pre-treatment TMB`
+GSE232240_TMB_sigs$`PD-L1 CPS` = GSE232240_TMB_sigs$`Pre-treatment PD-L1 CPS`
+GSE232240_TMB_sigs$Sample2 = sprintf("Pat%02d", GSE232240_TMB_sigs$ID)
+
+############# load TIDE score
+GSE232240_TIDE_df = read.table("../02.Input/GSE232240/TIDE_GSE232240.txt", row.names = 1, header = T, sep = "\t")
+GSE232240_TIDE_df$Sample = rownames(GSE232240_TIDE_df)
+GSE232240_TIDE_df$Sample = gsub("\\.","_",GSE232240_TIDE_df$Sample)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(GSE232240_geneExpr_TPM, IMPRES_gene_pairs)
+IMPRES_score_df$Sample = gsub("\\.","_",IMPRES_score_df$Sample)
+
+signatures_df = merge(signatures_df, GSE232240_ICF_df[c("Sample", "Sample2", "B cells")], by = "Sample")
+signatures_df = merge(signatures_df, GSE232240_cellProp_sigs, by = "Sample")
+signatures_df = merge(signatures_df, GSE232240_TMB_sigs, by = "Sample2")
+signatures_df = merge(signatures_df, GSE232240_TIDE_df[c("Sample", "TIDE")], by = "Sample")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample", "IMPRES")], by = "Sample")
+
+####### response information
+GSE232240_clinicalInfo_df = read.csv(file = "../02.Input/GSE232240/clinical_info.csv", header = T)
+GSE232240_clinicalInfo_df$ICBR[GSE232240_clinicalInfo_df$response=="NR"] = 0
+GSE232240_clinicalInfo_df$ICBR[GSE232240_clinicalInfo_df$response=="RE"] = 1
+GSE232240_clinicalInfo_df$ICBR = as.numeric(GSE232240_clinicalInfo_df$ICBR)
+GSE232240_clinicalInfo_df = GSE232240_clinicalInfo_df[c("ICBR", "meta")]
+colnames(GSE232240_clinicalInfo_df) = c("ICBR", "Sample")
+
+all_info = merge(signatures_df, GSE232240_clinicalInfo_df, by = "Sample", x.all = T)
+non_exist_feautures = setdiff(all_signatures, colnames(all_info))
+all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort5_sc"]] = all_info
+
+
+
+
+###################################### load data (Cohort2) ######################################
+##### gene expression
+GSE159067_geneExpr_TPM = read.table("../02.Input/GSE159067/GSE159067_TPM_clean.txt", header = T, sep="\t", row.names = 1) 
+### Kassandra deconvolution
+GSE159067_ICF_df = read.csv("../02.Input/GSE159067/GSE159067_ICFs_Deconvolution_Kassandra_result.csv",header=T, row.names = 1)
+GSE159067_ICF_df$`B cells` = GSE159067_ICF_df$B_cells
+GSE159067_ICF_df$`CD8T/Treg` = GSE159067_ICF_df$CD8_T_cells / (GSE159067_ICF_df$Tregs+0.000001)
+GSE159067_ICF_df$Sample = rownames(GSE159067_ICF_df)
+
+signatures_df = data.frame(t(GSE159067_geneExpr_TPM[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$`CXCL9/SPP1` = signatures_df$CXCL9/(signatures_df$SPP1 + 0.000001)
+signatures_df$Cyt =  as.numeric(colSums(log1p(GSE159067_geneExpr_TPM[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(GSE159067_geneExpr_TPM[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(GSE159067_geneExpr_TPM[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(GSE159067_geneExpr_TPM[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(GSE159067_geneExpr_TPM[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample = rownames(signatures_df)
+
+############# load TIDE score
+GSE159067_TIDE_df = read.table("../02.Input/GSE159067/TIDE_GSE159067.txt", row.names = 1, header = T, sep = "\t")
+GSE159067_TIDE_df$Sample = rownames(GSE159067_TIDE_df)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(GSE159067_geneExpr_TPM, IMPRES_gene_pairs)
+
+signatures_df = merge(signatures_df, GSE159067_ICF_df[c("Sample", "B cells", "CD8T/Treg")], by = "Sample")
+signatures_df = merge(signatures_df, GSE159067_TIDE_df[c("Sample", "TIDE")], by = "Sample")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample", "IMPRES")], by = "Sample")
+
+####### response information
+clinicInfo_GSE159067 = read.csv("../02.Input/GSE159067/GSE159067_clinicInfo.csv",header=T,row.names = NULL)
+clinicInfo_GSE159067$Sample = clinicInfo_GSE159067$X
+clinicInfo_GSE159067 = clinicInfo_GSE159067[c("Sample", "best.response.on.immunotherapy..recist..ch1")]
+colnames(clinicInfo_GSE159067) = c("Sample", "ICBR")
+clinicInfo_GSE159067$ICBR[clinicInfo_GSE159067$ICBR %in% c("PD", "SD")] = 0
+clinicInfo_GSE159067$ICBR[clinicInfo_GSE159067$ICBR %in% c("PR", "CR")] = 1
+clinicInfo_GSE159067$ICBR = as.numeric(clinicInfo_GSE159067$ICBR)
+
+all_info = merge(signatures_df, clinicInfo_GSE159067, by = "Sample", x.all = F)
+non_exist_feautures = setdiff(all_signatures, colnames(all_info))
+all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort2"]] = all_info
+
+
+
+###################################### load data (Cohort3) ######################################
+# only HNSC
+GSE93157_geneExpr_TPM = read.table('../02.Input/GSE93157/HNSCC/GSE93157_TPM.txt', header=TRUE, row.names = 1, sep='\t')
+### Kassandra deconvolution
+GSE93157_ICF_df = read.csv("../02.Input/GSE93157/HNSCC/GSE93157_ICFs_Deconvolution_Kassandra_result.csv",header=T, row.names = 1)
+GSE93157_ICF_df$`B cells` = GSE93157_ICF_df$B_cells
+GSE93157_ICF_df$`CD8T/Treg` = GSE93157_ICF_df$CD8_T_cells / (GSE93157_ICF_df$Tregs+0.000001)
+GSE93157_ICF_df$Sample = rownames(GSE93157_ICF_df)
+
+signatures_df = data.frame(t(GSE93157_geneExpr_TPM[test_genes, ]), check.names = F)
+colnames(signatures_df) = test_genes
+signatures_df$`CXCL9/SPP1` = signatures_df$CXCL9/(signatures_df$SPP1 + 0.000001)
+signatures_df$Cyt =  as.numeric(colSums(log1p(GSE93157_geneExpr_TPM[cyt_genes,]), na.rm = TRUE))/length(cyt_genes)
+signatures_df$Exh =  as.numeric(colSums(log1p(GSE93157_geneExpr_TPM[exh_genes,]), na.rm = TRUE))/length(exh_genes)
+signatures_df$IFNr = as.numeric(colSums(log1p(GSE93157_geneExpr_TPM[IFNr_genes,]), na.rm = TRUE))/length(IFNr_genes)
+signatures_df$`Tcell inf GEP` = as.numeric(colSums(log1p(GSE93157_geneExpr_TPM[IRG_genes,]), na.rm = TRUE))/length(IRG_genes)
+signatures_df$TLS = as.numeric(colSums(log1p(GSE93157_geneExpr_TPM[TLS_genes,]), na.rm = TRUE))/length(TLS_genes)
+signatures_df$Sample = rownames(signatures_df)
+
+############# load TIDE score
+GSE93157_TIDE_df = read.table("../02.Input/GSE93157/HNSCC/TIDE_GSE93157.txt", row.names = 1, header = T, sep = "\t")
+GSE93157_TIDE_df$Sample = rownames(GSE93157_TIDE_df)
+
+############# calculate IMPRES score
+IMPRES_score_df <- calculate_IMPRES(GSE93157_geneExpr_TPM, IMPRES_gene_pairs)
+
+signatures_df = merge(signatures_df, GSE93157_ICF_df[c("Sample", "B cells", "CD8T/Treg")], by = "Sample")
+signatures_df = merge(signatures_df, GSE93157_TIDE_df[c("Sample", "TIDE")], by = "Sample")
+signatures_df = merge(signatures_df, IMPRES_score_df[c("Sample", "IMPRES")], by = "Sample")
+
+####### response information
+GSE93157_clinicalInfo_df = read.csv('../02.Input/GSE93157/HNSCC/GSE93157_clinicInfo.csv', header=TRUE, row.names = 1)
+colnames(GSE93157_clinicalInfo_df) = c('response', 'ICBR', 'PFS_time', 'PFS_event')
+GSE93157_clinicalInfo_df$PFS_time = NULL
+GSE93157_clinicalInfo_df$PFS_event = NULL
+GSE93157_clinicalInfo_df$response = NULL
+GSE93157_clinicalInfo_df$Sample = rownames(GSE93157_clinicalInfo_df)
+GSE93157_all_info <- merge(signatures_df, GSE93157_clinicalInfo_df, by = "Sample", all.x = T)
+non_exist_feautures = setdiff(all_signatures, colnames(GSE93157_all_info))
+GSE93157_all_info[non_exist_feautures] = NA
+
+all_info_list[["Cohort3"]] = GSE93157_all_info
+
+
+
+###################################### load data (Cohort5 bulk) ######################################
+data_raw = read_excel("../02.Input/GSE232240/Bulk_deconvolution_ICBresponse.xlsx", sheet = "all_info")
+data_raw$ICBresponse = 1
+data_raw$ICBresponse[data_raw$`Primary tumor pathological response` %in% c("NPR")]=0 # "NPR","PPR"
+data_raw$B_pre = data_raw$`B lineage_Pre_MCPcounter`
+data_raw$B_on = data_raw$`B lineage_On_MCPcounter`
+data_raw$TMB = data_raw$`Pre-treatment TMB`
+data_raw$`PD-L1 CPS` = data_raw$`Pre-treatment PD-L1 CPS`
+data_raw1 = data_raw[c("ICBresponse", "B_pre", "TMB", "PD-L1 CPS")]
+data_raw2 = data_raw[c("ICBresponse", "B_on", "TMB", "PD-L1 CPS")]
+colnames(data_raw1) = c("ICBR", "B cells", "TMB", "PD-L1 CPS")
+colnames(data_raw2) = c("ICBR", "B cells", "TMB", "PD-L1 CPS")
+IMCISION_bulk = rbind(data_raw1, data_raw2)
+non_exist_feautures <- setdiff(all_signatures, colnames(IMCISION_bulk))
+IMCISION_bulk[non_exist_feautures] <- NA
+
+all_info_list[["Cohort5_bulk"]] = IMCISION_bulk
+
+
+
+######################### load data (Cohort11) #####################
+data_dir = "../02.Input/HNSCC-Amanda/"
+Psyrri_all_info <- read_excel(paste0(data_dir, "HNSCC ITx annotations all assays_v3_flow_arranged_20241004.xlsx"), sheet = "Sheet1")
+Psyrri_all_info = Psyrri_all_info[c(1,16, 17,21,74,80,598:610,637,642)] 
+Psyrri_all_info$ICBR = 0
+Psyrri_all_info$ICBR[Psyrri_all_info$BOR %in% c("CR", "PR")] = 1 
+Psyrri_all_info$`B cells` = Psyrri_all_info$`Flow B Cells count`/(Psyrri_all_info$`Flow Monocytes Count`+Psyrri_all_info$`Flow Lymphocytes Count`)
+Psyrri_all_info$`CD8T/Treg` = Psyrri_all_info$`Flow T CD8+CD25+ (cells/uL)`/(Psyrri_all_info$`Flow TRegs (CD4+CD25++FOXP3+) (cells/uL)`+0.000001)
+Psyrri_all_info$`Monocytes/Lymphocytes` = Psyrri_all_info$`Flow Monocytes Count`/Psyrri_all_info$`Flow Lymphocytes Count`
+Psyrri_all_info = Psyrri_all_info[!is.na(Psyrri_all_info$`B cells`), ]
+Psyrri_all_info = Psyrri_all_info[c("blood alb g/dl","n/l ratio", "PD-L1 PRE", "TLS PRE", "CD8T/Treg", "Monocytes/Lymphocytes",  "B cells", "ICBR")]
+colnames(Psyrri_all_info) = c("Albumin", "NLR", "PD-L1 CPS", "TLS", "CD8T/Treg", "Monocytes/Lymphocytes",  "B cells", "ICBR")
+
+non_exist_feautures <- setdiff(all_signatures, colnames(Psyrri_all_info))
+Psyrri_all_info[non_exist_feautures] <- NA
+
+all_info_list[["Cohort11"]] = Psyrri_all_info
+
+
+
+
+
+###################################### genes and signatures predictive power comparison ######################################
+result_fig_dir = "../03.Results/Figures/"
+
+test_biomarkers = c(all_signatures)
+
+datasets = names(all_info_list)
+
+result_AUC_df = data.frame(matrix(ncol = length(test_biomarkers), nrow = 0))
+colnames(result_AUC_df) = test_biomarkers
+for (ds in datasets){
+  cancer_data = all_info_list[[ds]]
+  AUC_vec = c()
+  for (gn in test_biomarkers){
+    predictor_temp = cancer_data[[gn]]
+    if (sum(is.na(predictor_temp)) == length(predictor_temp)){
+      AUC_temp = NA
+    }else{
+      roc_result=roc(cancer_data[["ICBR"]], predictor_temp, direction="<",levels=c(0, 1)) # direction: control < case group
+      AUC_temp = roc_result$auc[[1]]
+    }
+    AUC_vec = c(AUC_vec, AUC_temp)
+  }
+  result_AUC_df[ds,] = AUC_vec
+}
+result_AUC_df$TIDE = 1 - result_AUC_df$TIDE  # convert to AUC > 0.5
+result_AUC_df$NLR = 1 - result_AUC_df$NLR  # convert to AUC > 0.5
+result_AUC_df$Platelets = 1 - result_AUC_df$Platelets  # convert to AUC > 0.5
+result_AUC_df$FCNA = 1 - result_AUC_df$FCNA  # convert to AUC > 0.5
+result_AUC_df$HED = 1 - result_AUC_df$HED  # convert to AUC > 0.5
+result_AUC_df$FCNA = 1 - result_AUC_df$FCNA  # convert to AUC > 0.5
+result_AUC_df$`Monocytes/Lymphocytes` = 1 - result_AUC_df$`Monocytes/Lymphocytes`  # convert to AUC > 0.5
+
+```
+
+
+# Figure 4G (AUCs of biomarkers) and S14B (AUCs of genes). barplot of AUCs 
+```{r}
+
+#### add tumor B, blood B, bulk B, sc B
+result_AUC_df$`B cells (tumor)` = result_AUC_df$`B cells`
+result_AUC_df$`B cells (tumor)`[c(5,11)] = NA
+mean(result_AUC_df$`B cells (tumor)`, na.rm=T) # 0.69
+result_AUC_df$`B cells (PBMC)` = result_AUC_df$`B cells`
+result_AUC_df$`B cells (PBMC)`[c(1:4,6:10)] = NA
+mean(result_AUC_df$`B cells (PBMC)`, na.rm=T) # 0.70
+result_AUC_df$`B cells (bulk)` = result_AUC_df$`B cells`
+result_AUC_df$`B cells (bulk)`[c(4:7,11)] = NA
+mean(result_AUC_df$`B cells (bulk)`, na.rm=T) # 0.66
+result_AUC_df$`B cells (single-cell)` = result_AUC_df$`B cells`
+result_AUC_df$`B cells (single-cell)`[c(1:3, 8:10)] = NA
+mean(result_AUC_df$`B cells (single-cell)`, na.rm=T) # 0.73
+
+
+### Calculate mean values for each column, omitting NAs
+mean_values <- colMeans(result_AUC_df[1:11,], na.rm = TRUE)
+result_AUC_df["Mean", ] <- mean_values
+
+ordered_cols <- order(-as.numeric(result_AUC_df["Mean", ]))
+result_AUC_df <- result_AUC_df[, ordered_cols]
+
+test_genes_or_signatures = "signatures" # genes signatures
+test_sigs = c(all_signatures0, "IGHM","B cells (tumor)","B cells (PBMC)","B cells (bulk)","B cells (single-cell)") 
+
+
+if (test_genes_or_signatures == "genes"){
+  plot_vars = c(test_genes)  
+  fig_width = 9
+  fig_height = 6
+}else{
+  plot_vars = c(test_sigs)  
+  fig_width = 9
+  fig_height = 6
+}
+
+rownames(result_AUC_df) = c("Cohort9","Cohort10","Cohort4","Cohort6","Cohort7 (PBMC)","Cohort7 (Tissue)","Cohort5 (scRNAseq)","Cohort2","Cohort3","Cohort5 (bulk RNAseq)","Cohort11","Mean")
+
+result_AUC_df2 = result_AUC_df[1:11,]
+result_AUC_df2 = result_AUC_df2[colnames(result_AUC_df2) %in% plot_vars]
+
+# Reshape the data to a long format
+result_AUC_df2$Dataset <- rownames(result_AUC_df2)
+result_AUC_df_long <- melt(result_AUC_df2, id.vars = "Dataset", variable.name = "GeneSignature", value.name = "AUC")
+result_AUC_df_long$Dataset = factor(result_AUC_df_long$Dataset, levels = c("Cohort2","Cohort3","Cohort4","Cohort5 (bulk RNAseq)","Cohort5 (scRNAseq)","Cohort6","Cohort7 (PBMC)","Cohort7 (Tissue)", "Cohort9", "Cohort10","Cohort11"))
+
+# Calculate the mean AUC for each gene signature
+gene_signature_means <- aggregate(AUC ~ GeneSignature, data = result_AUC_df_long, FUN = mean)
+
+# Order the gene signatures by mean AUC from high to low
+ordered_gene_signatures <- as.character(gene_signature_means$GeneSignature[order(gene_signature_means$AUC, decreasing = TRUE)])
+
+# Create a boxplot with different colors for each dataset
+pdf_file <- paste0(result_fig_dir,paste0("barplot_AUC_compare_",test_genes_or_signatures,"_AllDatasets.pdf")) 
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(result_AUC_df_long, aes(x = GeneSignature, y = AUC)) +
+  geom_bar(stat = "summary", fun = "mean", position = "dodge", fill = "white", color = "black") +  
+  geom_jitter(aes(color = Dataset), position = position_jitter(0.2), size = 3) +  
+  scale_x_discrete(limits = ordered_gene_signatures) +
+  labs(title = "", x = "", y = "AUC") +
+  ylim(0, 1) +
+  scale_color_manual(values = my.cols, name = "") +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.text.y = element_text(color = "black"),
+        axis.text.x = element_text(color = "black", angle = 47, hjust = 1),
+        panel.border = element_blank(), legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5), nrow = 2))  
+
+        
+dev.off()
+
+```
+
+

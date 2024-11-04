@@ -1,0 +1,177 @@
+---
+title: "Correlation networks of cell abundance between different cell types in TCGA-HNSC"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12))sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Study relationship of tumor cell abundance between different cell types in TCGA-HNSC
+
+
+
+# load required package
+```{r}
+library(ggplot2)
+
+library(gridExtra)
+library(readxl)
+
+```
+
+
+# set path
+```{r}
+
+fig_dir = "../03.Results/Figures/"
+
+```
+
+# read in data 
+```{r}
+
+cell_ratios_df = read.csv(file = "../02.Input/TCGA/TCGA_HNC/ClinicalInfo/TCGA_HNSC_clinicalInfo_all.txt", sep = "\t")
+colnames(cell_ratios_df)
+
+cell_ratios_df = cell_ratios_df[c(1, 207, 63,66:67, 69:73)]
+cell_ratios_df_normal = cell_ratios_df[grepl("-11", cell_ratios_df$SampleID), ]
+cell_ratios_df_HPVp = cell_ratios_df[grepl("-01", cell_ratios_df$SampleID) & grepl("HNSC_HPV\\+", cell_ratios_df$Subtype), ]
+cell_ratios_df_HPVn = cell_ratios_df[grepl("-01", cell_ratios_df$SampleID) & grepl("HNSC_HPV-", cell_ratios_df$Subtype), ]
+cell_ratios_df_HPVunk = cell_ratios_df[grepl("-01", cell_ratios_df$SampleID) & is.na(cell_ratios_df$Subtype), ]
+
+```
+
+# Figure S12. correlation network between abundance of different cells in tumor (Note that MCPcounter was used here due to its ability to estimate abundance of dendritic cells)
+```{r}
+
+library(igraph) 
+
+TCGA_tumor_ICF_df = cell_ratios_df_HPVn # cell_ratios_df_HPVn cell_ratios_df_HPVp cell_ratios_df_HPVunk cell_ratios_df_normal 
+colnames(TCGA_tumor_ICF_df)
+TCGA_tumor_ICF_df$SampleID = NULL
+TCGA_tumor_ICF_df$Subtype = NULL
+
+colnames(TCGA_tumor_ICF_df) = gsub("_MCPCOUNTER","",colnames(TCGA_tumor_ICF_df))
+
+cat(colnames(TCGA_tumor_ICF_df), sep = '", "')
+
+cell_types_all = c("T cells", "NK cells", "B cells", "Macrophages/Monocytes", "Dendritic cells", "Neutrophils", "Endothelial cells", "Fibroblasts")
+
+colnames(TCGA_tumor_ICF_df) = cell_types_all
+
+color_vector <- c("Endothelial cells" = "#ff7f0e", "Fibroblasts" = "#ff7f0e", 
+                  "NK cells" = "#2ca02c","T cells" = "#2ca02c", "B cells" = "#2ca02c", 
+                  "Dendritic cells" = "#1f77b4", "Macrophages/Monocytes" = "#1f77b4", "Neutrophils" = "#1f77b4"
+                  ) 
+TCGA_tumor_ICF_df = TCGA_tumor_ICF_df[names(color_vector)]
+
+celltype_NUM = ncol(TCGA_tumor_ICF_df)
+cor_matrix_TCGA = matrix(0, nrow = celltype_NUM, ncol = celltype_NUM)
+rownames(cor_matrix_TCGA) = colnames(TCGA_tumor_ICF_df)
+colnames(cor_matrix_TCGA) = colnames(TCGA_tumor_ICF_df)
+
+for (i in 1:celltype_NUM){
+  for (j in i:celltype_NUM){
+    df_temp = data.frame(a1=TCGA_tumor_ICF_df[,i], a2 = TCGA_tumor_ICF_df[,j])
+    # Calculate Spearman's rank correlation
+    scc <- cor(df_temp$a1, df_temp$a2, method = "spearman")
+    cor_matrix_TCGA[i,j] = scc
+    cor_matrix_TCGA[j,i] = scc
+  }
+  cor_matrix_TCGA[i,i] = 0
+}
+
+graph <- graph_from_adjacency_matrix(cor_matrix_TCGA, weighted=TRUE)
+
+filtered_edges <- which(abs(E(graph)$weight) < 0.4)
+graph <- delete_edges(graph, filtered_edges)
+
+# Map the colors to the vertices based on their labels
+vertex_colors <- sapply(V(graph)$name, function(x) color_vector[x])
+
+# Plot 
+pdf_file <- paste0(fig_dir,paste0("CorrNetwork_cellAbundance_TCGA_HNSC_HPVn.pdf"))
+#pdf_file <- paste0(fig_dir,paste0("CorrNetwork_cellAbundance_TCGA_HNSC_HPVp.pdf"))
+#pdf_file <- paste0(fig_dir,paste0("CorrNetwork_cellAbundance_TCGA_HNSC_HPVunk.pdf"))
+#pdf_file <- paste0(fig_dir,paste0("CorrNetwork_cellAbundance_TCGA_HNSC_normal.pdf"))
+fig_width = 7
+fig_height = 7
+fontSize = 1.2
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot(graph, 
+     layout=layout.circle,
+     edge.width= abs(E(graph)$weight)^2*10,
+     edge.color=ifelse(E(graph)$weight > 0, "red", "blue"),
+     vertex.size=20,
+     vertex.color = vertex_colors,
+     vertex.label.color = "black",  
+     vertex.label.font = 1,
+     label.family = "Arial",
+     edge.arrow.size=0, # Set arrow size to 0
+     vertex.label="") # ""   V(graph)$name
+
+dev.off()
+
+# HPV-
+round(cor_matrix_TCGA["Fibroblasts", "Endothelial cells"],2)
+round(cor_matrix_TCGA["NK cells", "T cells"],2)
+round(cor_matrix_TCGA["NK cells", "B cells"],2)
+round(cor_matrix_TCGA["NK cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["NK cells", "Macrophages/Monocytes"],2)
+round(cor_matrix_TCGA["T cells", "B cells"],2)
+round(cor_matrix_TCGA["T cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["B cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["Macrophages/Monocytes", "Dendritic cells"],2)
+
+# HPV+
+round(cor_matrix_TCGA["Fibroblasts", "Endothelial cells"],2)
+round(cor_matrix_TCGA["NK cells", "T cells"],2)
+round(cor_matrix_TCGA["NK cells", "B cells"],2)
+round(cor_matrix_TCGA["NK cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["NK cells", "Macrophages/Monocytes"],2)
+round(cor_matrix_TCGA["T cells", "B cells"],2)
+round(cor_matrix_TCGA["T cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["B cells", "Dendritic cells"],2)
+
+# unknown
+round(cor_matrix_TCGA["Fibroblasts", "Endothelial cells"],2)
+round(cor_matrix_TCGA["NK cells", "T cells"],2)
+round(cor_matrix_TCGA["NK cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["NK cells", "Macrophages/Monocytes"],2)
+round(cor_matrix_TCGA["T cells", "B cells"],2)
+round(cor_matrix_TCGA["T cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["B cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["Macrophages/Monocytes", "Dendritic cells"],2)
+
+# normal
+round(cor_matrix_TCGA["Fibroblasts", "Endothelial cells"],2)
+round(cor_matrix_TCGA["NK cells", "T cells"],2)
+round(cor_matrix_TCGA["NK cells", "B cells"],2)
+round(cor_matrix_TCGA["NK cells", "Macrophages/Monocytes"],2)
+round(cor_matrix_TCGA["T cells", "B cells"],2)
+round(cor_matrix_TCGA["Macrophages/Monocytes", "Dendritic cells"],2)
+
+round(cor_matrix_TCGA["B cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["NK cells", "Dendritic cells"],2)
+round(cor_matrix_TCGA["T cells", "Dendritic cells"],2)
+
+
+```
+

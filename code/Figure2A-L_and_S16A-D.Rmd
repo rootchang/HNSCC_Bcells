@@ -1,0 +1,1203 @@
+---
+title: "Tumor B cell abundance predicts patient survival and ICB response in HNSCC"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- predicting HNSCC patient survival/ICB response from tumor immune cell abundances, either estimated from  bulk RNAseq or derived from scRNAseq 
+
+
+# load required package
+```{r}
+library(survival)
+library(survminer)
+library(ggplot2)
+library(RColorBrewer)
+library(glmnet)
+library(rlang)
+library(pROC)
+library(verification)
+library(tibble)
+library(gridExtra)
+library(forestplot)
+library(readxl)
+library(openxlsx)
+
+```
+
+# set the color scale
+```{r}
+
+my.cols = c("#1c4f27", "#81144e", "#79831e", "#00305d", "#C0C0C0", "#9c1915", "black", "#404040", "#808080", "#D3D3D3")
+
+```
+
+# Set directories & parameters
+```{r}
+
+result_fig_dir <- "../03.Results/Figures/"
+
+```
+
+# load data (bulk RNASeq)
+```{r}
+######################################## TCGA (Cohort1) ########################################
+# estimated TCGA immune cell fractions (ICFs) by Kassandra
+TCGA_ICF_df = read.csv('../02.Input/TCGA_HNC/HNSC_BG_deconvolution.tsv', header=TRUE, row.names = 1, sep = '\t')
+TCGA_ICF_df = data.frame(t(TCGA_ICF_df))
+rownames(TCGA_ICF_df) = gsub("\\.","-", rownames(TCGA_ICF_df))
+TCGA_ICF_df$PatientID = rownames(TCGA_ICF_df)
+# clinical information
+TCGA_clinicalInfo_df = read.csv('../02.Input/TCGA_HNC/ClinicalInfo/TCGA_HNSC_clinicalInfo_tumor.txt', header=TRUE, row.names = 1, sep = '\t')
+
+TCGA_clinicalInfo_df$Age = TCGA_clinicalInfo_df$age_at_initial_pathologic_diagnosis
+TCGA_clinicalInfo_df$Sex = TCGA_clinicalInfo_df$gender
+TCGA_clinicalInfo_df$Stage = TCGA_clinicalInfo_df$Neoplasm.Disease.Stage.American.Joint.Committee.on.Cancer.Code
+TCGA_clinicalInfo_df$HPV = TCGA_clinicalInfo_df$Subtype
+
+TCGA_clinicalInfo_df$HPV[TCGA_clinicalInfo_df$HPV=="HNSC_HPV-"] = "HPV-"
+TCGA_clinicalInfo_df$HPV[TCGA_clinicalInfo_df$HPV=="HNSC_HPV+"] = "HPV+"
+TCGA_clinicalInfo_df$HPV[is.na(TCGA_clinicalInfo_df$HPV)] = "Unknown"
+TCGA_clinicalInfo_df$Stage[TCGA_clinicalInfo_df$Stage %in% c("STAGE IVA", "STAGE IVB", "STAGE IVC")] = "Stage IV"
+TCGA_clinicalInfo_df$Stage[TCGA_clinicalInfo_df$Stage %in% c("STAGE I", "STAGE II", "STAGE III")] = "Stage I-III"
+TCGA_clinicalInfo_df$Stage[is.na(TCGA_clinicalInfo_df$Stage)] = "Unknown"
+
+TCGA_clinicalInfo_df$OS_time = TCGA_clinicalInfo_df$OS.time
+TCGA_clinicalInfo_df$OS_event = TCGA_clinicalInfo_df$OS
+TCGA_clinicalInfo_df$PFS_time = TCGA_clinicalInfo_df$PFI.time
+TCGA_clinicalInfo_df$PFS_event = TCGA_clinicalInfo_df$PFI
+TCGA_clinicalInfo_df = TCGA_clinicalInfo_df[c("Age", "Sex", "Stage", "HPV","OS_event","OS_time","PFS_event","PFS_time")]
+TCGA_clinicalInfo_df$OS_time = TCGA_clinicalInfo_df$OS_time/30 # days to months
+TCGA_clinicalInfo_df$PFS_time = TCGA_clinicalInfo_df$PFS_time/30 # days to months
+TCGA_clinicalInfo_df$PatientID = rownames(TCGA_clinicalInfo_df)
+TCGA_all_info <- merge(TCGA_ICF_df, TCGA_clinicalInfo_df, by = "PatientID", all.x = FALSE)
+
+
+######################################## GSE159067  (Cohort2) ########################################
+GSE159067_geneExp = read.table('../02.Input/GSE159067/GSE159067_TPM_clean.txt', header=TRUE, row.names = 1, sep='\t')
+# estimated GSE159067 immune cell fractions (ICFs) by Kassandra
+GSE159067_ICF_df = read.csv('../02.Input/GSE159067/GSE159067_ICFs_Deconvolution_Kassandra_result.csv', header=TRUE, row.names = 1)
+GSE159067_ICF_df$PatientID = rownames(GSE159067_ICF_df)
+GSE159067_clinicalInfo_df = read.csv('../02.Input/GSE159067/GSE159067_clinicInfo.csv', header=TRUE, row.names = 1)
+GSE159067_ICB_R_df = GSE159067_clinicalInfo_df[,'best.response.on.immunotherapy..recist..ch1',drop=FALSE]
+colnames(GSE159067_ICB_R_df) = c('ICB_R')
+GSE159067_ICB_R_df$ICB_R = replace(GSE159067_ICB_R_df$ICB_R,GSE159067_ICB_R_df$ICB_R=='PD',0)
+GSE159067_ICB_R_df$ICB_R = replace(GSE159067_ICB_R_df$ICB_R,GSE159067_ICB_R_df$ICB_R=='SD',0)
+GSE159067_ICB_R_df$ICB_R = replace(GSE159067_ICB_R_df$ICB_R,GSE159067_ICB_R_df$ICB_R=='CR',1)
+GSE159067_ICB_R_df$ICB_R = replace(GSE159067_ICB_R_df$ICB_R,GSE159067_ICB_R_df$ICB_R=='PR',1)
+GSE159067_ICB_R_df$ICB_R = as.numeric(GSE159067_ICB_R_df$ICB_R)
+GSE159067_all_info = data.frame(rep(0,nrow(GSE159067_clinicalInfo_df)))
+GSE159067_all_info$OS_time = GSE159067_clinicalInfo_df$os..month..ch1
+GSE159067_all_info$OS_event = GSE159067_clinicalInfo_df$os..event..ch1
+GSE159067_all_info$PFS_time = GSE159067_clinicalInfo_df$pfs..month..ch1
+GSE159067_all_info$PFS_event = GSE159067_clinicalInfo_df$pfs..event..ch1
+GSE159067_all_info$ICB_R = GSE159067_ICB_R_df$ICB_R
+GSE159067_all_info$CXCL9_SPP1 = as.numeric(GSE159067_geneExp["CXCL9",])/(as.numeric(GSE159067_geneExp["SPP1",])+0.000001)
+
+rownames(GSE159067_all_info) = rownames(GSE159067_ICF_df)
+GSE159067_all_info$PatientID = rownames(GSE159067_all_info)
+GSE159067_all_info <- merge(GSE159067_all_info, GSE159067_ICF_df, by = "PatientID", all.x = FALSE)
+GSE159067_all_info = GSE159067_all_info[,-2]
+
+
+
+
+######################################## NCT02296684 (Cohort3)  ########################################
+### gene expression TPM
+NCT02296684_geneExp = read.table('../02.Input/NCT02296684/TPM.expression', header=TRUE, sep='\t')
+### estimated immune cell fractions (ICFs) by Kassandra
+NCT02296684_ICF_df = read.csv("../02.Input/NCT02296684/ICFs_Deconvolution_Kassandra_result.tsv",header=T, sep="\t",row.names = 1)
+NCT02296684_ICF_df = data.frame(t(NCT02296684_ICF_df))
+NCT02296684_ICF_df$PatientID = gsub("\\..*","",rownames(NCT02296684_ICF_df))
+NCT02296684_ICF_df$PatientID = gsub("X","",NCT02296684_ICF_df$PatientID)
+NCT02296684_ICF_df$PatientID = as.numeric(NCT02296684_ICF_df$PatientID)
+NCT02296684_ICF_df$SampleID = rownames(NCT02296684_ICF_df)
+### clinical info.
+clinicInfo_NCT02296684 = read.csv('../02.Input/NCT02296684/phs001623_all_info.csv', header=TRUE, row.names = NULL)
+clinicInfo_NCT02296684 = clinicInfo_NCT02296684[c("Patient.ID", "Pathologic.response..Yes.No.")]
+colnames(clinicInfo_NCT02296684) = c("PatientID", "ICB_R")
+clinicInfo_NCT02296684$ICB_R[clinicInfo_NCT02296684$ICB_R %in% c("No")] = 0
+clinicInfo_NCT02296684$ICB_R[clinicInfo_NCT02296684$ICB_R=="Yes"] = 1
+clinicInfo_NCT02296684$ICB_R = as.numeric(clinicInfo_NCT02296684$ICB_R)
+clinicInfo_NCT02296684 <- clinicInfo_NCT02296684[!duplicated(clinicInfo_NCT02296684$PatientID), ]
+NCT02296684_all_info <- merge(NCT02296684_ICF_df, clinicInfo_NCT02296684, by = "PatientID", all.x = T)
+
+custom_order <- colnames(NCT02296684_geneExp)
+NCT02296684_all_info$SampleID <- factor(NCT02296684_all_info$SampleID, levels = custom_order)
+NCT02296684_all_info <- NCT02296684_all_info[order(NCT02296684_all_info$SampleID), ]
+NCT02296684_all_info$SampleID = as.character(NCT02296684_all_info$SampleID)
+
+NCT02296684_all_info$OS_time = NA
+NCT02296684_all_info$OS_event = NA
+NCT02296684_all_info$PFS_time = NA
+NCT02296684_all_info$PFS_event = NA
+
+
+######################################## GSE93157 (Cohort4)  ########################################
+# only HNSC
+GSE93157_geneExp = read.table('../02.Input/GSE93157/GSE93157_TPM.txt', header=TRUE, row.names = 1, sep='\t')
+# estimated immune cell fractions (ICFs) by Kassandra
+GSE93157_ICF_df = read.csv('../02.Input/GSE93157/GSE93157_ICFs_Deconvolution_Kassandra_result.csv', header=TRUE, row.names = 1)
+GSE93157_ICF_df$PatientID = rownames(GSE93157_ICF_df)
+GSE93157_clinicalInfo_df = read.csv('../02.Input/GSE93157/HNSCC/GSE93157_clinicInfo.csv', header=TRUE, row.names = 1)
+colnames(GSE93157_clinicalInfo_df) = c('response', 'ICB_R', 'PFS_time', 'PFS_event')
+GSE93157_clinicalInfo_df$OS_time = NA
+GSE93157_clinicalInfo_df$OS_event = NA
+GSE93157_clinicalInfo_df$CXCL9 = as.numeric(GSE93157_geneExp["CXCL9",])
+GSE93157_clinicalInfo_df$SPP1 = as.numeric(GSE93157_geneExp["SPP1",])
+GSE93157_clinicalInfo_df$CXCL9_SPP1 = GSE93157_clinicalInfo_df$CXCL9/(GSE93157_clinicalInfo_df$SPP1+0.000001)
+GSE93157_clinicalInfo_df$PatientID = rownames(GSE93157_clinicalInfo_df)
+GSE93157_all_info <- merge(GSE93157_clinicalInfo_df, GSE93157_ICF_df, by = "PatientID", all.x = FALSE)
+
+
+```
+
+
+# load data (Cohort6)
+```{r}
+
+ICB_samples = c("HN2","HN20","HN21","HN26","HN27","HN30","HN33","HN35","HN42","HN60","HN61","HN7","HN71","HN8") 
+GSE234933_tumor_ICF_df = read.csv('../02.Input/GSE234933/GSE234933_Tissue_CellProportions_withTumorCells.csv', header=TRUE, row.names = 1) 
+GSE234933_tumor_ICF_df = GSE234933_tumor_ICF_df[ICB_samples,]
+GSE234933_tumor_ICF_df$PatientID <- rownames(GSE234933_tumor_ICF_df)
+
+# clinical info.
+GSE234933_clinicalInfo_df = read.csv('../02.Input/GSE234933/GSE234933_Clinical_Info.csv', header=TRUE, row.names = 1)
+GSE234933_clinicalInfo_df = na.omit(GSE234933_clinicalInfo_df)
+GSE234933_clinicalInfo_df$PatientID = rownames(GSE234933_clinicalInfo_df)
+GSE234933_clinicalInfo_df_new = GSE234933_clinicalInfo_df[c("PatientID","HPV.Status","Original.anatomic.site","Anatomic.location.of.scRNA.seq.specimen","Sex","Age","Smoking.history","ICB_response2")]
+colnames(GSE234933_clinicalInfo_df_new) = c("PatientID","hpv_status","Tumorsite","scRNAseq_loc","Sex","Age","TobaccoUse","ICB_R")
+
+# merge ICF info df with clinical info df
+GSE234933_clinicalInfo_df = GSE234933_clinicalInfo_df_new
+sampleNames = rownames(GSE234933_tumor_ICF_df)
+GSE234933_all_info <- merge(GSE234933_tumor_ICF_df, GSE234933_clinicalInfo_df, by = "PatientID", all.x = FALSE)
+rownames(GSE234933_all_info) = sampleNames
+
+
+```
+
+
+# Figure 2AB: forest plot of MHRs and p values for Cohort1 (adjusted for HPV, age, sex, stage)
+```{r}
+
+cellType_all = c('B_cells', 'T_cells', 'Macrophages', 'Monocytes', 'NK_cells', 'Neutrophils', "Lymphocytes", 'Endothelium', 'Fibroblasts') 
+Outcome_all = c("OS_time", "OS_event", "PFS_time", "PFS_event")
+
+columns_keep = c(cellType_all, Outcome_all, "Age", "Sex", "Stage", "HPV")
+
+all_info = TCGA_all_info[columns_keep]
+all_info$Immune_cells = rowSums(all_info[1:6])
+
+cellType_all = c("B cells","T cells","Macrophages","Monocytes","NK cells", "Neutrophils", "Lymphocytes", "Endothelium", "Fibroblasts") 
+colnames(all_info) = c(cellType_all, "OS_time", "OS_event", "PFS_time", "PFS_event", "Age", "Sex", "Stage", "HPV","Immune cells")
+
+cellType_all = c(cellType_all, "Immune cells")
+
+result_df = data.frame(cellType = character(),
+                       HR_OS = numeric(),
+                       HR_OS_low = numeric(),
+                       HR_OS_up = numeric(),
+                       p_val_OS = numeric(),
+                       HR_PFS = numeric(),
+                       HR_PFS_low = numeric(),
+                       HR_PFS_up = numeric(),
+                       p_val_PFS = numeric())
+
+cancerData_all = all_info
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  Score_Pred = cancerData_all[[cn]]
+  Score=Score_Pred
+  exp_cutoff = quantile(Score_Pred, 0.5)
+  Score[Score_Pred>exp_cutoff]="High"
+  Score[Score_Pred<=exp_cutoff]="Low"
+  Score <- factor(Score)
+  Score <- relevel(Score, ref = "Low")
+  ##### OS
+  cancerData=data.frame(Score,cancerData_all[c("Age", "Sex", "Stage", "HPV","OS_time","OS_event")])
+  colnames(cancerData) = c("Score","Age", "Sex", "Stage", "HPV","OS_time","OS_event")
+  sfit <- survfit(Surv(OS_time, OS_event) ~ Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox <- coxph(Surv(OS_time, OS_event)~Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox_coef = summary(scox)$coefficients
+  HR_value1 = scox_coef[1,2] # hazard ratio
+  Z_value=scox_coef[1,4]
+  P_value1=scox_coef[1,5]
+  HR_low_1 = summary(scox)$conf.int[1,3]
+  HR_up_1 = summary(scox)$conf.int[1,4]
+  
+  ##### PFS
+  cancerData=data.frame(Score,cancerData_all[c("Age", "Sex", "Stage", "HPV","PFS_time","PFS_event")])
+  colnames(cancerData) = c("Score","Age", "Sex", "Stage", "HPV","PFS_time","PFS_event")
+  sfit <- survfit(Surv(PFS_time, PFS_event) ~ Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox <- coxph(Surv(PFS_time, PFS_event)~Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox_coef = summary(scox)$coefficients
+  HR_value2 = scox_coef[1,2] # hazard ratio
+  Z_value =scox_coef[1,4]
+  P_value2 =scox_coef[1,5]
+  HR_low_2 = summary(scox)$conf.int[1,3]
+  HR_up_2 = summary(scox)$conf.int[1,4]
+
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:9] = c(HR_value1, HR_low_1, HR_up_1, P_value1, HR_value2, HR_low_2, HR_up_2, P_value2)
+}
+# rank OS_HRs
+result_df <- result_df[order(result_df$HR_OS + result_df$HR_PFS), ]
+
+
+
+######### forest plot of OS HR and p-value
+plot_data <- tibble::tibble(mean  = result_df[["HR_OS"]],
+                            lower = result_df[["HR_OS_low"]],
+                            upper = result_df[["HR_OS_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["HR_OS"]],3),
+                            pval = result_df[["p_val_OS"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else if (pval>=0.001){
+    pval_vec[i] = as.character(round(pval,3))
+  }else if (pval>=0.0001){
+    pval_vec[i] = as.character(round(pval,4))
+  }else{
+    pval_vec[i] = '<0.0001'
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 2
+breaks_x = c(0,1,2)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_TCGA_HR_OS.pdf"))
+fig_width = 4.4
+fig_height = 3.9
+fontSize = 1.2
+xlabel = "HR of OS"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 1, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Cell type")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+
+
+
+######### forest plot of PFS HR and p-value
+plot_data <- tibble::tibble(mean  = result_df[["HR_PFS"]],
+                            lower = result_df[["HR_PFS_low"]],
+                            upper = result_df[["HR_PFS_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["HR_PFS"]],3),
+                            pval = result_df[["p_val_PFS"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else if (pval>=0.001){
+    pval_vec[i] = as.character(round(pval,3))
+  }else if (pval>=0.0001){
+    pval_vec[i] = as.character(round(pval,4))
+  }else{
+    pval_vec[i] = '<0.0001'
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 2
+breaks_x = c(0,1,2)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_TCGA_HR_PFS.pdf"))
+xlabel = "HR of PFS"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 1, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel,
+             xticks = breaks_x,
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Cell type")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+```
+
+
+# Figure 2CD - Figure S16AB. OS/PFS K-M curves for TCGA-HNC
+```{r}
+
+Bcell_high_vs_low_cutoff = 0.5 # 0.333, 0.5
+
+data_plot = TCGA_all_info
+data_plot$B_score = "High"
+data_plot$B_score[data_plot$B_cells <= quantile (data_plot$B_cells, Bcell_high_vs_low_cutoff)] = "Low"
+data_plot$B_score <- relevel(factor(data_plot$B_score), ref = "Low")
+
+##### OS
+cancerData=data.frame(data_plot$B_score,data_plot$OS_time,data_plot$OS_event)
+cancerData = na.omit(cancerData)
+colnames(cancerData) = c("Score", "OS_Months", "OS_Event")
+sfit = survfit(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(OS_Months,OS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('OS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE,             
+  
+  xlim = c(-3,200),
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="OS probability",
+  break.time.by = 50,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c("Low", "High"),   
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+) 
+
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_TCGA_Babundance_OS.pdf"),width=3.3, height=3)
+print(survp, newpage = FALSE)
+dev.off()
+
+
+
+
+
+##### PFS
+cancerData=data.frame(data_plot$B_score,data_plot$PFS_time,data_plot$PFS_event)
+cancerData = na.omit(cancerData)
+colnames(cancerData) = c("Score", "PFS_Months", "PFS_Event")
+sfit = survfit(Surv(PFS_Months,PFS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(PFS_Months,PFS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('PFS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE,             
+  
+  xlim = c(-3,200),
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="PFS probability",
+  break.time.by = 50,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c("Low", "High"),   
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+) 
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_TCGA_Babundance_PFS.pdf"),width=3.3, height=3)
+print(survp, newpage = FALSE)
+dev.off()
+
+
+```
+
+
+# Figure 2E: forest plot of AUCs and p values for merged HNSCC Cohorts2-4 
+```{r}
+
+cellType_all = c('B_cells', 'T_cells', 'Macrophages', 'Monocytes', 'NK_cells', 'Neutrophils', "Lymphocytes", 'Endothelium', 'Fibroblasts') 
+Outcome_all = c("OS_time", "OS_event", "PFS_time", "PFS_event", "ICB_R")
+
+columns_keep = c(cellType_all, Outcome_all)
+
+combined_bulk_all_info = rbind(GSE159067_all_info[columns_keep], GSE93157_all_info[columns_keep], NCT02296684_all_info[columns_keep])
+combined_bulk_all_info$Immune_cells = rowSums(combined_bulk_all_info[1:6])
+
+cellType_all = c("B cells","T cells","Macrophages","Monocytes","NK cells", "Neutrophils", "Lymphocytes", "Endothelium", "Fibroblasts") 
+colnames(combined_bulk_all_info) = c(cellType_all, "OS_time", "OS_event", "PFS_time", "PFS_event","ICB_R","Immune cells")
+
+cellType_all = c(cellType_all, "Immune cells")
+
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = combined_bulk_all_info[c(cn, "ICB_R")]
+  colnames(cancerData) = c("CellType", "ICB_R")
+  logistic_model = glm(ICB_R ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$ICB_R,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICB_R,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+
+# rank AUCs
+result_df <- result_df[order(-result_df$AUC), ]
+
+######### forest plot of AUC and p-value
+plot_data <- tibble::tibble(mean  = result_df[["AUC"]],
+                            lower = result_df[["AUC_low"]],
+                            upper = result_df[["AUC_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["AUC"]],3),
+                            pval = result_df[["p_val"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else if (pval>=0.001){
+    pval_vec[i] = as.character(round(pval,3))
+  }else if (pval>=0.0001){
+    pval_vec[i] = as.character(round(pval,4))
+  }else{
+    pval_vec[i] = '<0.0001'
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 1
+breaks_x = c(0,0.5,1)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_bulk_ICBcohort_AUC.pdf"))
+fig_width = 4.4
+fig_height = 3.9
+fontSize = 1.2
+xlabel = "AUC of ICB objective response"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 0.5, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("AUC")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Cell type")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+```
+
+
+# Figure 2F: box plot of B abundance in R vs NR for merged HNSCC ICB Cohorts2-4 (GSE159067, GSE93157, NCT02296684)
+```{r}
+
+all_info = combined_bulk_all_info
+
+pdf(file = paste0(result_fig_dir, "Box_Cohorts2_4_Babundance_R_vs_NR.pdf"),height = 3, width = 2) 
+ggplot() +
+  geom_boxplot(data = all_info, aes(x = factor(ICB_R, level=c(0,1)), y = `B cells`, fill = factor(ICB_R, level=c(0,1))),outlier.shape = NA) +
+  geom_point(data = all_info, aes(x = ICB_R + 1 + runif(length(`B cells`), min = -0.2, max = 0.2), y = `B cells`)) +
+  labs(x = "", y = "B cell abundance (%)") +
+  scale_x_discrete(labels = c("NR", "R")) +  
+  scale_fill_manual(values = c("#00305d", "#9c1915")) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        legend.position = "none")
+dev.off()
+
+print(wilcox.test(all_info$`B cells`[all_info$ICB_R==1], all_info$`B cells`[all_info$ICB_R==0])) 
+
+```
+
+# Figure 2GH (Bcell_high_vs_low_cutoff = 0.5) and Figure S16CD (Bcell_high_vs_low_cutoff = 0.333). OS/PFS K-M curves for merged HNSCC Cohorts2-4 
+```{r}
+
+Bcell_high_vs_low_cutoff = 0.5 # 0.333, 0.5
+
+data_plot = combined_bulk_all_info
+
+##### OS
+cancerData=data_plot[c("B cells","OS_time","OS_event")]
+cancerData = na.omit(cancerData)
+cancerData$B_score = "High"
+cancerData$B_score[cancerData$`B cells` <= quantile (cancerData$`B cells`, Bcell_high_vs_low_cutoff)] = "Low"
+cancerData$B_score <- relevel(factor(cancerData$B_score), ref = "Low")
+cancerData=cancerData[c("B_score","OS_time","OS_event")]
+
+colnames(cancerData) = c("Score", "OS_Months", "OS_Event")
+sfit = survfit(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(OS_Months,OS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('OS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE,             
+  
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="OS probability",
+  break.time.by = 10,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c("Low", "High"),    
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+) 
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_bulk_ICBcohort_Babundance_OS.pdf"),width=3.3, height=3)
+print(survp, newpage = FALSE)
+dev.off()
+
+
+
+
+
+##### PFS
+cancerData=data_plot[c("B cells","PFS_time","PFS_event")]
+cancerData = na.omit(cancerData)
+cancerData$B_score = "High"
+cancerData$B_score[cancerData$`B cells` <= quantile (cancerData$`B cells`, Bcell_high_vs_low_cutoff)] = "Low"
+cancerData$B_score <- relevel(factor(cancerData$B_score), ref = "Low")
+cancerData=cancerData[c("B_score","PFS_time","PFS_event")]
+
+colnames(cancerData) = c("Score", "PFS_Months", "PFS_Event")
+sfit = survfit(Surv(PFS_Months,PFS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(PFS_Months,PFS_Event)~Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('PFS', round(P_value,5), round(HR_value,2)), collapse= " "))
+
+##### plot
+fontSize = 12
+survp=ggsurvplot(
+  sfit,
+  data = cancerData,
+  size = 1,                
+  palette =
+    c("#00305d", "#9c1915"),
+  conf.int = FALSE,         
+  pval = FALSE, 
+  
+  ylim=c(0,1),
+  xlab = "Time (months)", ylab="PFS probability",
+  break.time.by = 10,
+  risk.table=TRUE,
+  risk.table.height = 0.25, 
+  risk.table.pos="out",
+  risk.table.col="black",
+  risk.table.y.text = FALSE,
+  tables.y.text = FALSE, 
+  tables.theme = theme_cleantable(),
+  legend.labs =c("Low", "High"),   
+  legend.title="",
+  legend = c(0.65, 0.9), 
+  font.main = c(fontSize),
+  font.caption = c(fontSize),
+  font.legend = c(fontSize),
+  font.tickslab = c(fontSize),
+  font.x = c(fontSize),
+  font.y = c(fontSize),
+  ggtheme = theme(legend.background = element_rect(fill = NA, color=NA),legend.key = element_rect(fill = NA, color=NA),
+                 plot.margin = unit(c(0.2, 0.2, 0, 0.2),"cm"),
+                 panel.background = element_rect(fill = "white"),
+                 panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                 panel.border = element_blank(),axis.line = element_line(colour = "black"),
+                 axis.text.x = element_text(colour="black"),axis.text.y = element_text(colour="black")),  
+) 
+survp$plot = survp$plot+ 
+            ggplot2::annotate("text", x=0, y=0.15, label=paste0('HR',' = ',round(HR_value,2),' (', round(HR_CI[1],2),'-',round(HR_CI[2],2),')','\n','p = ',sprintf('%.3f', P_value)),size = 5, hjust = 0)
+pdf(paste0(result_fig_dir, "KM_curve_bulk_ICBcohort_Babundance_PFS.pdf"),width=3.3, height=3)
+print(survp, newpage = FALSE)
+dev.off()
+
+```
+
+
+# Figure 2I: forest plot of AUCs and p values for scRNAseq HNSCC ICB cohort (GSE234933)
+```{r}
+
+cellType_all = colnames(GSE234933_all_info)[c(2:8, 10:13)]
+Outcome_all = c("ICB_R")
+columns_keep = c(cellType_all, Outcome_all)
+
+all_info = GSE234933_all_info[columns_keep]
+all_info$Immune_cells = rowSums(all_info[c(1:2,5:8,10)])
+all_info$Lymphocytes = rowSums(all_info[c(1,10)])
+
+cellType_all = c("B cells", "Dendritic cells", "Endothelial cells", "Fibroblasts", "Macrophages", "Mast cells", "Monocytes", "Neutrophils", "Epithelial cells", "T & NK cells", "Tumor cells")
+colnames(all_info) = c(cellType_all, "ICB_R", "Immune cells", "Lymphocytes")
+cellType_all = c(cellType_all, "Immune cells", "Lymphocytes")
+
+result_df = data.frame(cellType = character(),
+                       AUC = numeric(),
+                       AUC_low = numeric(),
+                       AUC_up = numeric(),
+                       p_val = numeric())
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData = all_info[c(cn, "ICB_R")]
+  colnames(cancerData) = c("CellType", "ICB_R")
+  logistic_model = glm(ICB_R ~ CellType, family='binomial', data=cancerData)
+  predict_RecR = predict(logistic_model, cancerData['CellType'], type = "response")
+  roc_result=roc(cancerData$ICB_R,cancerData$CellType, direction="<",levels=c(0, 1)) 
+  auc_RecR = roc_result$auc[1]
+  auc_95CI = c(ci.auc(roc_result)[1],ci.auc(roc_result)[3])
+  auc_p=roc.area(cancerData$ICB_R,predict_RecR)
+  p_RecR = auc_p$p.value
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:5] = c(auc_RecR, auc_95CI, p_RecR)
+}
+
+# rank AUCs
+result_df <- result_df[order(-result_df$AUC), ]
+
+######### forest plot of AUC and p-value
+plot_data <- tibble::tibble(mean  = result_df[["AUC"]],
+                            lower = result_df[["AUC_low"]],
+                            upper = result_df[["AUC_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["AUC"]],3),
+                            pval = result_df[["p_val"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else if (pval>=0.001){
+    pval_vec[i] = as.character(round(pval,3))
+  }else if (pval>=0.0001){
+    pval_vec[i] = as.character(round(pval,4))
+  }else{
+    pval_vec[i] = '<0.0001'
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 1
+breaks_x = c(0,0.5,1)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_scGSE234933_ICBcohort_AUC.pdf"))
+fig_width = 4.6
+fig_height = 4.2
+fontSize = 1.2
+xlabel = "AUC of ICB objective response"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 0.5, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("AUC")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Cell type")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+```
+
+
+# Figure 2J: box plot of B abundance in R vs NR for GSE234933
+```{r}
+
+all_info$`B cells` = all_info$`B cells` * 100
+
+pdf(file = paste0(result_fig_dir, "Box_scGSE234933_ICBcohort_Babundance_R_vs_NR.pdf"),height = 3, width = 2) 
+ggplot() +
+  geom_boxplot(data = all_info, aes(x = factor(ICB_R, level=c(0,1)), y = `B cells`, fill = factor(ICB_R, level=c(0,1))),outlier.shape = NA) +
+  geom_point(data = all_info, aes(x = ICB_R + 1 + runif(length(`B cells`), min = -0.2, max = 0.2), y = `B cells`)) +
+  labs(x = "", y = "B cell abundance (%)") +
+  scale_x_discrete(labels = c("NR", "R")) +  
+  scale_fill_manual(values = c("#00305d", "#9c1915")) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        legend.position = "none")
+dev.off()
+
+print(wilcox.test(all_info$`B cells`[all_info$ICB_R==1], all_info$`B cells`[all_info$ICB_R==0])) 
+
+```
+
+
+# Figure 2K. B cell abundance predicts ICB response on IMCISION trial (Cohort5, scRNAseq)
+```{r}
+clinical_info = read.csv(file = paste0("../02.Input/GSE232240/clinical_info.csv"), header = T)
+norm_cell_counts_df = read.csv(paste0("../02.Input/GSE232240/Tissue_CellProportions.csv"), header = T)
+
+clinical_info$response[clinical_info$response=="NR"] = 0
+clinical_info$response[clinical_info$response=="RE"] = 1
+clinical_info = clinical_info[c("response", "meta")]
+cell_ratio = norm_cell_counts_df[c("X", "B")] 
+colnames(cell_ratio) = c("meta", "B")
+GSE232240_all_info = merge(clinical_info, cell_ratio, by="meta")
+
+######  (left). ROC and AUC (Pre and On timePt merged)
+plot_data = GSE232240_all_info
+colnames(plot_data)=c("SampleID", "ICBresponse", "PBMC_B_ratio")
+plot_data = na.omit(plot_data)
+plot_data$ICBresponse = as.numeric(plot_data$ICBresponse)
+
+roc_obj <- roc(plot_data$ICBresponse, plot_data$PBMC_B_ratio)
+AUC_ci <- ci.auc(roc_obj)
+AUC = AUC_ci[2]
+AUC_low = AUC_ci[1]
+AUC_up = AUC_ci[3]
+p_val = roc.area(plot_data$ICBresponse, plot_data$PBMC_B_ratio)$p.value
+label <- sprintf("AUC = %.2f (%.2f,%.2f)\np = %.3f", AUC,AUC_low,AUC_up, p_val)
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_Bratio_ICBR_sc_IMCISION.pdf"))
+fig_width = 2.7
+fig_height = 2.2
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj$sensitivities, sensitivity=roc_obj$specificities), aes(x = 1 - specificity, y = sensitivity), color = "black", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = 0.17,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+######  (right). ROC and AUC (timePt separated)
+plot_data1 = GSE232240_all_info[grepl("pre", GSE232240_all_info$meta),]
+colnames(plot_data1) = c("SampleID", "ICBresponse", "B_ratio")
+plot_data1 = na.omit(plot_data1)
+roc_obj1 <- roc(plot_data1$ICBresponse, plot_data1$B_ratio)
+auc1 <- auc(roc_obj1)
+
+plot_data2 = GSE232240_all_info[grepl("post", GSE232240_all_info$meta),]
+colnames(plot_data2) = c("SampleID", "ICBresponse", "B_ratio")
+plot_data2 = na.omit(plot_data2)
+roc_obj2 <- roc(plot_data2$ICBresponse, plot_data2$B_ratio)
+auc2 <- auc(roc_obj2)
+
+label <- sprintf("AUC (Pre) = %.2f \nAUC (On) = %.2f\n", auc1,auc2)
+label_x_pos = 0.5
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_Bratio_ICBR_sc_IMCISION_pre_on_separate.pdf"))
+fig_width = 2.7
+fig_height = 2.2
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj1$sensitivities, sensitivity=roc_obj1$specificities), aes(x = 1 - specificity, y = sensitivity), color = my.cols[1], linetype = "solid", linewidth = 1) +
+  geom_line(data = data.frame(specificity=roc_obj2$sensitivities, sensitivity=roc_obj2$specificities), aes(x = 1 - specificity, y = sensitivity), color = my.cols[2], linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = label_x_pos,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 3
+  ) +
+  annotate(
+    geom = "segment",
+    x = label_x_pos - 0.08,
+    xend = label_x_pos - 0.02,
+    y = 0.22,
+    yend = 0.22,
+    color = my.cols[2],
+    linewidth = 1
+  ) +
+  annotate(
+    geom = "segment",
+    x = label_x_pos - 0.08,
+    xend = label_x_pos - 0.02,
+    y = 0.1,
+    yend = 0.1,
+    color = my.cols[1],
+    linewidth = 1
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+```
+
+
+# Figure 2L. B cell abundance predicts ICB response on IMCISION trial (Cohort5, bulk RNAseq)
+```{r}
+library(tidyr)
+
+data_raw = read_excel("../02.Input/GSE232240/Bulk_deconvolution_ICBresponse.xlsx", sheet = "all_info")
+
+data_raw$ICBresponse = 1
+data_raw$ICBresponse[data_raw$`Primary tumor pathological response` %in% c("NPR")]=0 
+data_raw$B_pre = data_raw$`B lineage_Pre_MCPcounter`
+data_raw$B_on = data_raw$`B lineage_On_MCPcounter`
+data_raw = data_raw[c("ID","ICBresponse", "B_pre", "B_on")]
+
+long_data <- pivot_longer(data_raw, 
+                          cols = c(B_pre, B_on), 
+                          names_to = "TimePoint", 
+                          values_to = "Value")
+
+
+######  (left). ROC and AUC (Pre and On timePt merged)
+plot_data = long_data[c("ID", "Value", "ICBresponse")]
+colnames(plot_data)=c("SampleID", "PBMC_B_ratio", "ICBresponse")
+plot_data = na.omit(plot_data)
+
+# Calculate the ROC curve
+roc_obj <- roc(plot_data$ICBresponse, plot_data$PBMC_B_ratio)
+# Calculate the AUC with the 95% CI
+AUC_ci <- ci.auc(roc_obj)
+AUC = AUC_ci[2]
+AUC_low = AUC_ci[1]
+AUC_up = AUC_ci[3]
+# Calculate the p-value for the AUC
+p_val = roc.area(plot_data$ICBresponse, plot_data$PBMC_B_ratio)$p.value
+label <- sprintf("AUC = %.2f (%.2f,%.2f)\np = %.3f", AUC,AUC_low,AUC_up, p_val)
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_Bratio_ICBR_bulk_IMCISION.pdf"))
+fig_width = 2.7
+fig_height = 2.2
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj$sensitivities, sensitivity=roc_obj$specificities), aes(x = 1 - specificity, y = sensitivity), color = "black", linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = 0.17,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 4
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+
+
+######  (right). ROC and AUC (timePt separated)
+# Calculate the ROC curve for pre-treatment
+plot_data1 = data_raw[c("ID", "B_pre", "ICBresponse")]
+colnames(plot_data1) = c("SampleID", "B_ratio", "ICBresponse")
+plot_data1 = na.omit(plot_data1)
+roc_obj1 <- roc(plot_data1$ICBresponse, plot_data1$B_ratio)
+auc1 <- auc(roc_obj1)
+
+# Calculate the ROC curve for on-treatment
+plot_data2 = data_raw[c("ID", "B_on", "ICBresponse")]
+colnames(plot_data2) = c("SampleID", "B_ratio", "ICBresponse")
+plot_data2 = na.omit(plot_data2)
+roc_obj2 <- roc(plot_data2$ICBresponse, plot_data2$B_ratio)
+auc2 <- auc(roc_obj2)
+
+label <- sprintf("AUC (Pre) = %.2f \nAUC (On) = %.2f\n", auc1,auc2)
+label_x_pos = 0.5
+
+pdf_file <- paste0(result_fig_dir,paste0("ROC_Bratio_ICBR_bulk_IMCISION_pre_on_separate.pdf"))
+fig_width = 2.7
+fig_height = 2.2
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_line(data = data.frame(specificity=roc_obj1$sensitivities, sensitivity=roc_obj1$specificities), aes(x = 1 - specificity, y = sensitivity), color = my.cols[1], linetype = "solid", linewidth = 1) +
+  geom_line(data = data.frame(specificity=roc_obj2$sensitivities, sensitivity=roc_obj2$specificities), aes(x = 1 - specificity, y = sensitivity), color = my.cols[2], linetype = "solid", linewidth = 1) +
+  annotate(
+    geom = "text",
+    x = label_x_pos,
+    y = 0.1,
+    hjust = 0,
+    label = label,
+    size = 3
+  ) +
+  annotate(
+    geom = "segment",
+    x = label_x_pos - 0.08,
+    xend = label_x_pos - 0.02,
+    y = 0.22,
+    yend = 0.22,
+    color = my.cols[1],
+    linewidth = 1
+  ) +
+  annotate(
+    geom = "segment",
+    x = label_x_pos - 0.08,
+    xend = label_x_pos - 0.02,
+    y = 0.1,
+    yend = 0.1,
+    color = my.cols[2],
+    linewidth = 1
+  ) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+
+```
+

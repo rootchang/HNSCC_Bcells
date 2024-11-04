@@ -1,0 +1,256 @@
+---
+title: "High B cell abundance correlates with an anti-tumor microenvironment (Cohort10)"
+author: "Tiangen Chang tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Validate the relationship between B cell abundance and identified genes and signatures in an in-house cohort (Cohort10)
+
+
+# load required package
+```{r}
+
+library(survival)
+library(survminer)
+library(ggplot2)
+library(RColorBrewer)
+library(glmnet)
+library(rlang)
+library(pROC)
+library(verification)
+library(tibble)
+library(gridExtra)
+library(forestplot)
+
+library(GSVA)
+
+library(org.Hs.eg.db)
+library(readxl)
+library(openxlsx)
+
+library(purrr)
+library(readr)
+
+```
+
+# common functions and constants
+```{r}
+
+process_file <- function(file_path) {
+  sample_name <- gsub(".*result_(.*)\\.tsv", "\\1", basename(file_path))
+  df <- read_tsv(file_path, col_names = TRUE)
+  df <- df[, 1:2]  
+  colnames(df) <- c("Cell_Type", sample_name)
+  return(df)
+}
+
+```
+
+# load in-house 1 data (Cohort10)
+```{r}
+
+Morris_gene_expr_df = read.csv(file = "../02.Input/MSK/Morris.HNIO.Sample.hg19KnownGene.tpm.csv", header = T, row.names = 1)
+
+gene_symbols = mapIds(x = org.Hs.eg.db,
+                                  keys=rownames(Morris_gene_expr_df),
+                                  keytype="ENTREZID",
+                                  column="SYMBOL",
+                                  multiVals="first")
+
+Morris_gene_expr_df$geneSymbol = gene_symbols
+Morris_gene_expr_df$geneSymbol[is.na(Morris_gene_expr_df$geneSymbol)] = rownames(Morris_gene_expr_df)[is.na(Morris_gene_expr_df$geneSymbol)]
+
+Morris_gene_expr_df = Morris_gene_expr_df[!duplicated(Morris_gene_expr_df$geneSymbol),]
+rownames(Morris_gene_expr_df) = Morris_gene_expr_df$geneSymbol
+Morris_gene_expr_df$geneSymbol = NULL
+Morris_Kassandra_cellRatio_df = read.csv("../02.Input/MSK/Morris_Kassandra_deconvolution_result.csv", row.names = 1)
+Morris_Kassandra_cellRatio_df$ID = Morris_Kassandra_cellRatio_df$Sample
+
+############### clincal_info
+clincal_info_df = read.xlsx("../02.Input/MSK/HN_preIO_RNAseq_Clinical data for nci.xlsx", sheet = "HN_Illumina.Sample_Info")
+
+Morris_all_info = merge(Morris_Kassandra_cellRatio_df, clincal_info_df, by = "Sample")
+Morris_all_info$ICBR = 0
+Morris_all_info$ICBR[Morris_all_info$BEST_RESPONSE %in% c("CR", "PR")] = 1
+
+
+```
+
+# Figure S13F. Cell abundance correlation heatmap (Note that MCPcounter was used here due to its ability to estimate abundance of dendritic cells)
+```{r}
+
+tumor_ICF_df = Morris_all_info 
+colnames(tumor_ICF_df)
+tumor_ICF_df = tumor_ICF_df[c(3,6:12)]
+cat(colnames(tumor_ICF_df), sep = '", "')
+colnames(tumor_ICF_df) = c("T cells", "B cells", "NK cells", "Macrophages/Monocytes", "Dendritic cells", "Neutrophils", "Endothelial cells", "Fibroblasts")
+cell_types_all = colnames(tumor_ICF_df) 
+
+write.csv(tumor_ICF_df, file = "../02.Input/MSK/Morris_cell_abundance_MCPcounter.csv")
+
+#### correlation heatmap plot
+# Run: python CellAbundance_CorHeatmap.py
+
+```
+
+
+# Figure S13G. comparison of gene IFNG and CXCL9, and GMCSF cytosig score in B-high vs B-low tumors
+```{r}
+
+Morris_Bratio_df = Morris_Kassandra_cellRatio_df[c("ID", "B_cells")]
+Morris_Bratio_df$B_score = 1
+Morris_Bratio_df$B_score[Morris_Bratio_df$B_cells <= quantile (Morris_Bratio_df$B_cells, 0.50)] = 0
+
+Morris_gene_expr_df_log1p <- log1p(Morris_gene_expr_df)
+Morris_gene_expr_df_log1p = data.frame(t(Morris_gene_expr_df_log1p))
+Morris_gene_expr_df_log1p$ID = rownames(Morris_gene_expr_df_log1p)
+all_info_df = merge(Morris_gene_expr_df_log1p[c("ID", "IFNG", "CXCL9")], Morris_Bratio_df, by = "ID")
+
+test_gene_vec = c("IFNG", "CXCL9")
+for (test_gene in test_gene_vec) {
+  all_info <- all_info_df[c("B_score", test_gene)]
+  colnames(all_info) <- c("B_score", "test_gene_value")
+  
+  pdf(file = paste0(result_fig_dir, "Box_Morris_", test_gene, "_Bhigh_vs_Blow.pdf"), height = 2, width = 2*0.8)
+  
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(B_score, levels = c(0, 1)), y = test_gene_value, fill = factor(B_score, levels = c(0, 1))), outlier.shape = NA) +
+    geom_point(aes(x = B_score + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), y = test_gene_value)) +
+    scale_x_discrete(labels = c("0" = "Blow", "1" = "Bhigh")) + 
+    labs(x = "", y = paste0(test_gene, "")) +
+    
+    theme(panel.grid = element_blank(), 
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(color = "black"),
+          panel.border = element_blank(), 
+          legend.position = "none")
+  print(p)
+  dev.off()
+  # Perform the Wilcoxon test and print the result
+  print(paste("**************************", test_gene, "**************************"))
+  print(wilcox.test(all_info$test_gene_value[all_info$B_score == 1], all_info$test_gene_value[all_info$B_score == 0])) 
+}
+
+
+
+#### load cytosig result
+cytosig_result_df = read.csv(file = "../02.Input/MSK/Cytosig_heatmap.csv")
+all_info_df = merge(cytosig_result_df, Morris_Bratio_df, by = "ID")
+
+test_cytosig_vec = c( "GMCSF")
+for (test_gene in test_cytosig_vec) {
+  all_info <- all_info_df[c("B_score", test_gene)]
+  colnames(all_info) <- c("B_score", "test_gene_value")
+  
+  pdf(file = paste0(result_fig_dir, "Box_Morris_", test_gene, "_Bhigh_vs_Blow.pdf"), height = 2, width = 2*0.8)
+  
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(B_score, levels = c(0, 1)), y = test_gene_value, fill = factor(B_score, levels = c(0, 1))), outlier.shape = NA) +
+    geom_point(aes(x = B_score + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), y = test_gene_value)) +
+    scale_x_discrete(labels = c("0" = "Blow", "1" = "Bhigh")) + 
+    labs(x = "", y = paste0(test_gene, "")) +
+    
+    theme(panel.grid = element_blank(), 
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(color = "black"),
+          panel.border = element_blank(), 
+          legend.position = "none")
+  print(p)
+  dev.off()
+  # Perform the Wilcoxon test and print the result
+  print(paste("**************************", test_gene, "**************************"))
+  print(wilcox.test(all_info$test_gene_value[all_info$B_score == 1], all_info$test_gene_value[all_info$B_score == 0])) 
+}
+
+```
+
+
+# Figure S13G. comparison of MHCII, cross-presentation, and Hypoxia ssgsea scores in B-high vs B-low tumors
+```{r}
+
+# signatures
+signature_list <- list(
+  ER_phago_vacuolar = c("SEC61A1","CALR", "RAB7A", "LAMP1", "NPC1", "CYBB","CTSS","CTSB","CTSL"),
+  Hypoxia_Buffa = c("VEGFA", "SLC2A1", "PGAM1", "ENO1", "LDHA", "TPI1", "P4HA1", "MRPS17", "CDKN3", "ADM", "NDRG1", "TUBB6", "ALDOA", "MIF", "ACOT7", "MCTS1", "PSRC1", "PSMA7", "ANLN", "TUBA1B", "MAD2L2", "GPI", "TUBA1C", "MAP7D1", "DDIT4", "BNIP3", "C20orf20", "HIG2", "GAPDH", "MRPL13", "CHCHD2", "YKT6", "NP", "CORO1C", "SEC61G", "ANKRD37", "ESRP1", "PFKP", "SHCBP1", "CTSL2", "KIF20A", "SLC25A32", "UTP11L", "SLC16A1", "MRPL15", "KIF4A", "LRRC42", "PGK1", "HK2", "AK3L1", "CA9"),
+  MHCII_genes = c("HLA-DRA", "HLA-DRB1", "HLA-DMA", "HLA-DPA1", "HLA-DPB1", "HLA-DMB", "HLA-DQB1", "HLA-DQA1", "CIITA")
+)
+
+###### GSVA signatures
+pseudobulk_mat = as.matrix(Morris_gene_expr_df)
+
+ssgsea_scores <- gsva(pseudobulk_mat, signature_list, method = "ssgsea")
+rownames(ssgsea_scores) = paste0(rownames(ssgsea_scores), "_ssgsea")
+
+ssgsea_scores_df = data.frame(t(ssgsea_scores))
+ssgsea_scores_df$ID = rownames(ssgsea_scores_df)
+
+Morris_Bratio_df = Morris_Kassandra_cellRatio_df[c("ID", "B_cells")]
+Morris_Bratio_df$B_score = 1
+Morris_Bratio_df$B_score[Morris_Bratio_df$B_cells <= quantile (Morris_Bratio_df$B_cells, 0.50)] = 0
+
+all_info_df = merge(ssgsea_scores_df, Morris_Bratio_df, by = "ID")
+cat(colnames(all_info_df), sep = '", "')
+colnames(all_info_df) = c("ID", "Cross-presentation\n score", "Hypoxia score", "MHCII score", "B_cells", "B_score")
+
+test_signature_vec = c("MHCII score", "Cross-presentation\n score", "Hypoxia score")
+for (test_gene in test_signature_vec) {
+  all_info <- all_info_df[c("B_score", test_gene)]
+  colnames(all_info) <- c("B_score", "test_gene_value")
+  
+  pdf(file = paste0(result_fig_dir, "Box_Morris_", test_gene, "_Bhigh_vs_Blow.pdf"), height = 2, width = 2*0.8)
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(B_score, levels = c(0, 1)), y = test_gene_value, fill = factor(B_score, levels = c(0, 1))), outlier.shape = NA) +
+    geom_point(aes(x = B_score + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), y = test_gene_value)) +
+    scale_x_discrete(labels = c("0" = "Blow", "1" = "Bhigh")) + 
+    labs(x = "", y = paste0(test_gene, "")) +
+    ylim(-0.15, 1) +  
+    theme(panel.grid = element_blank(), 
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(color = "black"),
+          panel.border = element_blank(), 
+          legend.position = "none")
+  print(p)
+  dev.off()
+  # Perform the Wilcoxon test and print the result
+  print(wilcox.test(all_info$test_gene_value[all_info$B_score == 1], all_info$test_gene_value[all_info$B_score == 0])) 
+}
+
+```
+
+
+

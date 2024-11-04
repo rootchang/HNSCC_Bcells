@@ -1,0 +1,266 @@
+---
+title: "High B cell abundance correlates with an anti-tumor microenvironment in TCGA-HNSC"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Validate the relationship between B cell abundance and identified genes and signatures in TCGA-HNSC
+
+
+# load required package
+```{r}
+
+library(ggplot2)
+library(RColorBrewer)
+library(glmnet)
+library(rlang)
+library(tibble)
+library(gridExtra)
+
+library(GSVA)
+library(dplyr)
+
+```
+
+
+# set path
+```{r}
+
+data_dir <- "../02.Input/TCGA/TCGA_HNC/"
+fig_dir = "../03.Results/Figures/"
+
+```
+
+# GSVA signatures
+```{r}
+
+gene_set_list <- list(
+  ER_phago_vacuolar = c("SEC61A1","CALR", "RAB7A", "LAMP1", "NPC1", "CYBB","CTSS","CTSB","CTSL"),
+  Hypoxia_Buffa = c("VEGFA", "SLC2A1", "PGAM1", "ENO1", "LDHA", "TPI1", "P4HA1", "MRPS17", "CDKN3", "ADM", "NDRG1", "TUBB6", "ALDOA", "MIF", "ACOT7", "MCTS1", "PSRC1", "PSMA7", "ANLN", "TUBA1B", "MAD2L2", "GPI", "TUBA1C", "MAP7D1", "DDIT4", "BNIP3", "C20orf20", "HIG2", "GAPDH", "MRPL13", "CHCHD2", "YKT6", "NP", "CORO1C", "SEC61G", "ANKRD37", "ESRP1", "PFKP", "SHCBP1", "CTSL2", "KIF20A", "SLC25A32", "UTP11L", "SLC16A1", "MRPL15", "KIF4A", "LRRC42", "PGK1", "HK2", "AK3L1", "CA9"),
+  MHCII_genes = c("HLA-DRA", "HLA-DRB1", "HLA-DMA", "HLA-DPA1", "HLA-DPB1", "HLA-DMB", "HLA-DQB1", "HLA-DQA1", "CIITA")
+)
+
+merged_signature_list = gene_set_list
+
+```
+
+
+# load data and extract variables
+```{r}
+
+# Kassandra deconvolution
+Kassandra_info = read.table(file = paste0(data_dir, "HNSC_BG_deconvolution.tsv"), header = T, sep = "\t", row.names = 1) 
+Kassandra_info = data.frame(t(Kassandra_info))
+Kassandra_info$B_cells = Kassandra_info$B_cells * 100
+Kassandra_info$SampleID = gsub("\\.", "-", rownames(Kassandra_info))
+Kassandra_info = Kassandra_info[c("B_cells", "SampleID")]
+
+# clinical data (B ratio)
+Clinical_info = read.table(file = paste0(data_dir, "ClinicalInfo/TCGA_HNSC_clinicalInfo_tumor.txt"), header = T, sep = "\t") 
+Clinical_info$HPV = Clinical_info$Subtype
+
+Clinical_info$HPV[Clinical_info$HPV=="HNSC_HPV-"] = "HPV-"
+Clinical_info$HPV[Clinical_info$HPV=="HNSC_HPV+"] = "HPV+"
+
+Clinical_info = Clinical_info[c("HPV", "SampleID")]
+Clinical_info = Clinical_info[grepl("-01$", Clinical_info$SampleID),]
+
+# merge
+clinical_info_all = merge(Clinical_info, Kassandra_info, by = "SampleID", all.x = T)
+
+###### gene expression data
+geneExpr_TCGA_HNSC = read.table(file =paste0(data_dir, "TPM/TCGA_HNSC_geneExpr_TPM_tumor.txt"), header = T, sep = "\t")
+geneExpr_TCGA_HNSC = geneExpr_TCGA_HNSC[!grepl("^ENSG", rownames(geneExpr_TCGA_HNSC)), ]
+geneExpr_df = log1p(geneExpr_TCGA_HNSC)
+
+
+# build signature data frame
+merged_signature_score_df = data.frame(matrix(ncol = ncol(geneExpr_df), nrow = 0))
+colnames(merged_signature_score_df) = colnames(geneExpr_df)
+
+############ signatures
+merged_signature_score_df["Mac_sig", ] = geneExpr_df["CXCL9", ]/geneExpr_df["SPP1", ]
+
+###### ssgsea signatures
+pseudobulk_mat = as.matrix(geneExpr_df)
+
+ssgsea_scores <- gsva(pseudobulk_mat, merged_signature_list, method = "ssgsea")
+rownames(ssgsea_scores) = paste0(rownames(ssgsea_scores), "_ssgsea")
+
+merged_signature_score_df = rbind(merged_signature_score_df, ssgsea_scores)
+
+# merge data
+merged_signature_score_df2 = data.frame(t(merged_signature_score_df))
+rownames(merged_signature_score_df2) = gsub("\\.","-", rownames(merged_signature_score_df2))
+merged_signature_score_df2$SampleID <- rownames(merged_signature_score_df2)
+signature_phenotype_TCGA_df = merge(merged_signature_score_df2, clinical_info_all, by = "SampleID", all.x = T)
+
+```
+
+# load cytosig data
+```{r}
+
+cytosig_info = read.table(file = paste0("../02.Input/TCGA_all/Cytosig/cytosig_TCGA_HNSC.Zscore"), header = T, sep = "\t") 
+cytosig_info = data.frame(t(cytosig_info))
+cytosig_info$SampleID = rownames(cytosig_info)
+
+```
+
+
+
+# Figure S13A-D. correlation plot between Bratio and signatures
+```{r}
+
+colnames(signature_phenotype_TCGA_df)
+cat(colnames(signature_phenotype_TCGA_df), sep = '", "')
+colnames(signature_phenotype_TCGA_df) = c("SampleID", "Mac_sig", "Cross-presentation score", "Hypoxia score", "MHCII score", "HPV", "B_cells")
+signature_phenotype_TCGA_df = signature_phenotype_TCGA_df[!is.na(signature_phenotype_TCGA_df$HPV),]
+
+var_test = "Hypoxia score" # "Cross-presentation score", "Hypoxia score", "MHCII score"
+all_info = na.omit(signature_phenotype_TCGA_df[c("B_cells","HPV", var_test)])
+colnames(all_info) = c("B_cells","HPV", "var_test")
+
+cor.test(all_info$B_cells, all_info$var_test, method = "spearman")
+
+all_info_HPVp = all_info[all_info$HPV=="HPV+",]
+cor.test(all_info_HPVp$B_cells, all_info_HPVp$var_test, method = "spearman")
+
+all_info_HPVp = all_info[all_info$HPV=="HPV-",]
+cor.test(all_info_HPVp$B_cells, all_info_HPVp$var_test, method = "spearman")
+
+pdf_file <- paste0(fig_dir,paste0("Bratio_",var_test,"_TCGA.pdf"))
+fig_width = 2.7
+fig_height = 2.7
+fontSize = 1.2
+xlabel = "B cell abundance (%)" 
+ylabel = var_test
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(all_info, aes(x = B_cells, y = var_test, color = HPV)) +
+  geom_point() +
+  labs(x = xlabel, y = ylabel, color = "HPV Status") +
+  scale_x_continuous(trans = 'log1p', breaks = c(0, 5, 10, 20, 30)) +
+  scale_color_manual(values = my.cols) +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        legend.position = "none"
+        )
+
+dev.off()
+
+```
+
+# Figure S13E. heatmap of CXCL9, IFNG, and GM-CSF cytosig vs B cell abundance among HPVp, HPVn, and merged patients
+```{r}
+
+test_genes = c("IFNG", "CXCL9")
+
+geneExpr_df_selected = data.frame(t(geneExpr_df[test_genes,]))
+geneExpr_df_selected$SampleID = rownames(geneExpr_df_selected)
+
+geneExpr_df_selected = merge(geneExpr_df_selected, cytosig_info[c("SampleID", "GMCSF")], by = "SampleID", all.x = F)
+geneExpr_df_selected$SampleID = gsub("\\.","-", geneExpr_df_selected$SampleID)
+all_info_TCGA_df = merge(signature_phenotype_TCGA_df, geneExpr_df_selected, by = "SampleID")
+
+test_genes = c("IFNG", "CXCL9", "GMCSF")
+test_genes_show = c("IFNG", "CXCL9", "GMCSF (cytosig)")
+
+all_info_TCGA_df = all_info_TCGA_df[c(test_genes, "B_cells", "HPV")]
+
+all_info_TCGA_df = all_info_TCGA_df[!is.na(all_info_TCGA_df$HPV), ]
+all_info_TCGA_df_HPVp = all_info_TCGA_df[all_info_TCGA_df$HPV=="HPV+",]
+all_info_TCGA_df_HPVn = all_info_TCGA_df[all_info_TCGA_df$HPV=="HPV-",]
+
+TCGA_Bratio_TMEfeature_cor_df = data.frame(FeatureName = as.character(),
+                                             SampleType = as.character(),
+                                             SCC = as.numeric(),
+                                             pval = as.numeric()
+                                             )
+for (tg in test_genes){
+  test_result <- cor.test(all_info_TCGA_df$B_cells,all_info_TCGA_df[[tg]], method = "spearman")
+  scc <- test_result$estimate
+  pval <- test_result$p.value
+  TCGA_Bratio_TMEfeature_cor_df[nrow(TCGA_Bratio_TMEfeature_cor_df)+1,] = c(tg, "Merged", scc, pval)
+}
+for (tg in test_genes){
+  test_result <- cor.test(all_info_TCGA_df_HPVp$B_cells,all_info_TCGA_df_HPVp[[tg]], method = "spearman")
+  scc <- test_result$estimate
+  pval <- test_result$p.value
+  TCGA_Bratio_TMEfeature_cor_df[nrow(TCGA_Bratio_TMEfeature_cor_df)+1,] = c(tg, "HPV+", scc, pval)
+}
+for (tg in test_genes){
+  test_result <- cor.test(all_info_TCGA_df_HPVn$B_cells,all_info_TCGA_df_HPVn[[tg]], method = "spearman")
+  scc <- test_result$estimate
+  pval <- test_result$p.value
+  TCGA_Bratio_TMEfeature_cor_df[nrow(TCGA_Bratio_TMEfeature_cor_df)+1,] = c(tg, "HPV-", scc, pval)
+}
+
+TCGA_Bratio_TMEfeature_cor_df$SCC = as.numeric(TCGA_Bratio_TMEfeature_cor_df$SCC)
+TCGA_Bratio_TMEfeature_cor_df$pval = as.numeric(TCGA_Bratio_TMEfeature_cor_df$pval)
+TCGA_Bratio_TMEfeature_cor_df$adj.pval <- p.adjust(TCGA_Bratio_TMEfeature_cor_df$pval, method = "BH")
+
+
+TCGA_Bratio_TMEfeature_cor_df$SampleType = factor(TCGA_Bratio_TMEfeature_cor_df$SampleType, levels = c("HPV+", "HPV-", "Merged"))
+TCGA_Bratio_TMEfeature_cor_df$FeatureName[TCGA_Bratio_TMEfeature_cor_df$FeatureName==test_genes[3]] = "GMCSF (cytosig)"
+
+
+#####################  heatmap #####################
+TCGA_Bratio_TMEfeature_cor_df$FeatureName = factor(TCGA_Bratio_TMEfeature_cor_df$FeatureName, levels = rev(test_genes_show))
+# Add p-value symbols to the data frame based on adj.pval cutoffs
+TCGA_Bratio_TMEfeature_cor_df <- TCGA_Bratio_TMEfeature_cor_df %>%
+  mutate(pval_symbol = case_when(
+    adj.pval < 0.001 ~ "****",
+    adj.pval < 0.01 ~ "***",
+    adj.pval < 0.05 ~ "**",
+    adj.pval < 0.1 ~ "*",
+    TRUE ~ ""
+  ))
+
+# Create the heatmap with SCC values and p-value symbols
+pdf(file = paste0(fig_dir, "Heatmap_Bratio_TMEfeature_Cor_TCGA.pdf"), width = 5*0.75, height = 4*0.6)
+ggplot(TCGA_Bratio_TMEfeature_cor_df, aes(x = SampleType, y = FeatureName)) +
+  geom_tile(aes(fill = SCC), color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-0.6, 0.6)) +
+  geom_text(aes(label = round(SCC, 2)), color = "black", size = 3, vjust = -0.3) +  
+  geom_text(aes(label = pval_symbol), color = "black", size = 5, vjust = 1.3) +  
+  labs(title = "", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, color = "black"),
+        axis.text.y = element_text(color = "black"), 
+        axis.ticks.y = element_blank(), 
+        axis.ticks.x = element_blank(), 
+        axis.text.y.right = element_text(color = "black"),
+        panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        panel.border = element_blank(), 
+        plot.margin = unit(c(0, 0, 0, 0), "lines") 
+  )
+dev.off()
+
+```
+
