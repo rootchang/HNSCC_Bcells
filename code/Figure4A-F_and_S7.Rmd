@@ -174,7 +174,7 @@ print(wilcox.test(all_info$`B cells`[all_info$ICB_R==1], all_info$`B cells`[all_
 
 ```
 
-# Figure 4BC - Figure S16EF. K-M curves tumor B ratio vs OS / PFS (Cohort10)
+# Figure 4BC - Figure S7AB. K-M curves tumor B ratio vs OS / PFS (Cohort10)
 ```{r}
 
 Bcell_high_vs_low_cutoff = 0.333 # 0.333, 0.5
@@ -379,7 +379,7 @@ dev.off()
 
 ```
 
-# Figure 4D - Figure S16I. odds ratio of response rates by PBMC B ratio
+# Figure 4D - Figure S7C. odds ratio of response rates by PBMC B ratio
 ```{r}
 
 # Define PBMC B ratio cutoff for Bhigh vs Blow
@@ -431,7 +431,7 @@ print(chi_test)
 
 ```
 
-# Figure 4EF - Figure S16J. K-M curves PBMC B ratio vs OS / PFS (Cohort11) 
+# Figure 4EF - Figure S7D. K-M curves PBMC B ratio vs OS / PFS (Cohort11) 
 ```{r}
 
 cutoff <- 5.5 # 4,5,6,7 5.5

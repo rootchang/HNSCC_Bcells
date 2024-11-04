@@ -1,6 +1,6 @@
 ---
-title: "Prognostic roles of B cell abundance and IGHM across different TCGA cancer types"
-author: "Tiangen Chang  tiangen.chang@nih.gov"
+title: "Comparison of patient response rates with high versus low B cell abundance measured from PBMC or tumor tissue"
+author: "Tiangen Chang tiangen.chang@nih.gov"
 output: 
   rmarkdown::html_vignette:
     toc: true
@@ -21,403 +21,161 @@ require(ggplot2)
 ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
 ```
 
+
 # Aims:
 
-- Test prognostic roles of B cells and IGHM in TCGA (pan-cancer)
+- Study the additional questions (1): Among patients with discordant B cell abundance between tumor and blood, which source better predicted ICB response?
 
 
-# load required package
 ```{r, include=FALSE}
+# load required package
 
 library(dplyr)
 library(ggplot2)
 
-library(openxlsx)
-library(UCell)
-library(readxl)
-
-library(gridExtra)
-
 library(pROC)
-library("verification")
+library(verification)
 
-library(survival)
-library(survminer)
+library(purrr)
+library(readr)
 
-library(AnnotationDbi)
-library(org.Hs.eg.db)
-
-library(forestplot)
+library(ggpubr)
 
 ```
 
-
-# set path
+# set color
 ```{r}
 
-data_dir <- "../02.Input/TCGA/TCGA_all/"
-processed_dir <- "../03.Results/Data/"
-fig_dir = "../03.Results/Figures/"
+custom_colors = c("#1c4f27", "#81144e", "#79831e", "#00305d", "#C0C0C0", "#9c1915", "black", "#404040", "#808080", "#D3D3D3")
 
 ```
 
-# load data
+# common functions and constants
 ```{r}
-# read in Kassandra estimated B ratio for all cancers
-# List all .tsv files in the folder
-file_list <- list.files(path = paste0(data_dir,"Kassandra_TCGA"), pattern = "\\.tsv$")
-data_list = list()
-cancer_types <- sapply(strsplit(file_list, "_"), `[`, 1)
-for (i in 1:length(cancer_types)){
-  ct = cancer_types[i]
-  file = file_list[i]
-  data_list[[i]] = read.delim(paste0(data_dir,"Kassandra_TCGA/",file))
-  data_list[[i]]["CancerType",] = ct
-  data_list[[i]]["CancerType",1] = "CancerType"
-}
 
-# Merge all data frames by row names
-combined_data <- Reduce(function(x, y) {
-  merge(x, y, by = "X", all = TRUE)
-}, data_list)
-
-rownames(combined_data) = combined_data$X
-# remove _std rows
-combined_data <- combined_data[-grep("_std$", combined_data$X), ]
-combined_data$X = NULL
-combined_data = data.frame(t(combined_data))
-combined_data$SampleID = rownames(combined_data)
-
-# geneExpr
-geneExpr_TCGA = readRDS(file =paste0(data_dir, "TCGA_RSEM_gene_TPM.rds"))
-##### test a group of genes
-gene_test = c("IGHM") 
-geneExpr_df = data.frame(t(geneExpr_TCGA[gene_test,]))
-geneExpr_df = log1p(geneExpr_df)
-geneExpr_df$SampleID = colnames(geneExpr_TCGA)
-# remove healthy tissues
-geneExpr_df = geneExpr_df[!grepl("\\.11$|\\.12$", geneExpr_df$SampleID),]
-
-Info_all = merge(combined_data, geneExpr_df,by="SampleID", all.x=T)
-Info_all$SampleID = gsub("\\.","-",Info_all$SampleID)
-
-
-clinicInfo_TCGA_df = read.table(file = paste0(data_dir, "Survival_SupplementalTable_S1_20171025_xena_sp.txt"), header = T, sep = "\t")
-clinicInfo_TCGA_df = clinicInfo_TCGA_df[c(1:2,4:5,7,9,26:33)]
-colnames(clinicInfo_TCGA_df) = c("SampleID", "PatientID", "Age", "Sex", "Stage", "Histology", "OS_event", "OS_time", "DSS_event", "DSS_time", "DFI_event", "DFI_time", "PFI_event", "PFI_time")
-
-
-Info_all = merge(Info_all, clinicInfo_TCGA_df,by="SampleID", all.x=T)
-
-Info_all[c(2,4:23, 25, 29:36)] <- lapply(Info_all[c(2,4:23, 25, 29:36)], as.numeric)
+result_fig_dir = "../03.Results/Figures/"
 
 ```
 
-# prognostic role of B cell abundance / IGHM in different cancer types
+# Figure S6A. analysis in Cohort7
 ```{r}
 
-Info_all$Stage = ifelse(Info_all$Stage %in% c("Stage IV","Stage IVA","Stage IVB","Stage IVC"), 1, 0)
+response_type = "RECIST_R"  # Patho_minR RECIST_R
 
-CancerType_all = sort(unique(Info_all$CancerType))
-digit_number = 4
-quantile_cutoff = 0.5
+###  immune cell fractions (ICFs) from scRNAseq annotation
+GSE200996_ICF_df_PBMC = read.csv("../02.Input/GSE200996/GSE200996_PBMC_CellProportions_L2.csv",header=T, row.names = 1)
+GSE200996_ICF_df_PBMC$SampleID = rownames(GSE200996_ICF_df_PBMC)
+GSE200996_ICF_df_PBMC$PatientID = gsub("-.*", "", GSE200996_ICF_df_PBMC$SampleID)
+GSE200996_ICF_df_PBMC = GSE200996_ICF_df_PBMC[!grepl("B3", GSE200996_ICF_df_PBMC$SampleID),]
+GSE200996_ICF_df_PBMC$SampleID[grepl("B1", GSE200996_ICF_df_PBMC$SampleID)] = paste0(GSE200996_ICF_df_PBMC$PatientID[grepl("B1", GSE200996_ICF_df_PBMC$SampleID)], "_pre")
+GSE200996_ICF_df_PBMC$SampleID[grepl("B2", GSE200996_ICF_df_PBMC$SampleID)] = paste0(GSE200996_ICF_df_PBMC$PatientID[grepl("B2", GSE200996_ICF_df_PBMC$SampleID)], "_post")
+GSE200996_ICF_df_tumor = read.csv("../02.Input/GSE200996/GSE200996_Tissue_CellProportions_L2.csv",header=T, row.names = 1)
+GSE200996_ICF_df_tumor$SampleID = rownames(GSE200996_ICF_df_tumor)
+GSE200996_ICF_df_tumor$SampleID = gsub("_tumor", "", GSE200996_ICF_df_tumor$SampleID)
 
+GSE200996_ICF_df = GSE200996_ICF_df_PBMC[c("SampleID", "B")]
+GSE200996_ICF_df$B_cells_PBMC = GSE200996_ICF_df$B * 100
+GSE200996_ICF_df$B = NULL
+GSE200996_ICF_df <- merge(GSE200996_ICF_df, GSE200996_ICF_df_tumor[c("SampleID", "B")], by = "SampleID", all.x = T)
+colnames(GSE200996_ICF_df) = c("SampleID", "B_cells_PBMC", "B_cells_Tissue")
+GSE200996_ICF_df$PatientID = gsub("_.*", "", GSE200996_ICF_df$SampleID)
 
-############################### B ratio prognostic role ###############################
-predictor_colname = "B_cells" 
-result_Bratio_df = data.frame(cellType = character(),
-                       HR_OS = numeric(),
-                       HR_OS_low = numeric(),
-                       HR_OS_up = numeric(),
-                       p_val_OS = numeric(),
-                       HR_PFS = numeric(),
-                       HR_PFS_low = numeric(),
-                       HR_PFS_up = numeric(),
-                       p_val_PFS = numeric())
+### clinical info.
+clinicInfo_GSE200996 = read.csv('../02.Input/GSE200996/GSE200996_PatientOutcome.csv', header=TRUE, row.names = 1)
+clinicInfo_GSE200996$PatientID = rownames(clinicInfo_GSE200996)
+clinicInfo_GSE200996$RECIST_R = clinicInfo_GSE200996[,'RECIST.response.excluding.non.measurable']
+clinicInfo_GSE200996$RECIST_R[grepl('stable/progress', clinicInfo_GSE200996$RECIST_R)] = 0
+clinicInfo_GSE200996$RECIST_R[grepl('response', clinicInfo_GSE200996$RECIST_R)] = 1
+clinicInfo_GSE200996$RECIST_R[grepl('not measurable', clinicInfo_GSE200996$RECIST_R)] = NA
+clinicInfo_GSE200996$RECIST_R = as.numeric(clinicInfo_GSE200996$RECIST_R)
+clinicInfo_GSE200996$Patho_R = clinicInfo_GSE200996[,'Pathological.response..'] 
+clinicInfo_GSE200996$Patho_minR = (clinicInfo_GSE200996$Patho_R>=10)+0
+clinicInfo_GSE200996 = clinicInfo_GSE200996[c("PatientID", "RECIST_R", "Patho_minR")]
 
-for (ct_i in 1:length(CancerType_all)){
-  ct = CancerType_all[ct_i]
-  
-  ##### OS 
-  cancerData = Info_all[Info_all$CancerType == ct, c(predictor_colname, "Age", "Sex", "Stage", "OS_event", "OS_time")]
-  cancerData = na.omit(cancerData)
-  if (nrow(cancerData) < 10){
-    HR_value1 = NA
-    P_value1 = NA
-  }else{
-    colnames(cancerData) = c("Score", "Age", "Sex", "Stage", "OS_Event", "OS_Time")
-    cancerData$Score2 = 1
-    cancerData$Score2[cancerData$Score <= quantile(cancerData$Score, quantile_cutoff)] = 0
-    cancerData$Score = NULL
-    colnames(cancerData) = c( "Age", "Sex", "Stage","OS_Event", "OS_Time", "Score")
-    sfit = survfit(Surv(OS_Time,OS_Event) ~ Score+Age+Sex+Stage, data=cancerData)
-    # Filter out variables with only one level
-    valid_vars <- sapply(cancerData[, c("Score", "Age", "Sex", "Stage")], function(x) length(unique(x)) > 1)
-    filtered_vars <- names(valid_vars)[valid_vars]
-    formula <- as.formula(paste("Surv(OS_Time, OS_Event) ~", paste(filtered_vars, collapse = "+")))
-    scox <- coxph(formula, data = cancerData)
-    scox_coef = summary(scox)$coefficients
-    HR_value1 = round(scox_coef[1,2],digit_number) # hazard ratio
-    P_value1= round(scox_coef[1,5],digit_number)
-    HR_low_1 = summary(scox)$conf.int[1,3]
-    HR_up_1 = summary(scox)$conf.int[1,4]
-  }
+GSE200996_all_info <- merge(GSE200996_ICF_df, clinicInfo_GSE200996, by = "PatientID", all.x = T)
+GSE200996_all_info = GSE200996_all_info[!is.na(GSE200996_all_info$B_cells_Tissue), ]
+GSE200996_all_info$PBMC_Bgroup = ifelse(GSE200996_all_info$B_cells_PBMC > median(GSE200996_all_info$B_cells_PBMC), "PBMC-High", "PBMC-Low")
+GSE200996_all_info$Tissue_Bgroup = ifelse(GSE200996_all_info$B_cells_Tissue > median(GSE200996_all_info$B_cells_Tissue), "Tissue-High", "Tissue-Low")
+GSE200996_all_info$Group = paste(GSE200996_all_info$PBMC_Bgroup, GSE200996_all_info$Tissue_Bgroup, sep = ",")
 
-  ##### PFI
-  cancerData = Info_all[Info_all$CancerType == ct, c(predictor_colname, "Age", "Sex", "Stage","PFI_event", "PFI_time")]
-  cancerData = na.omit(cancerData)
-  if (nrow(cancerData) < 10){
-    HR_value4 = "NA"
-    P_value4 = "NA"
-  }else{
-    colnames(cancerData) = c("Score",  "Age", "Sex", "Stage","PFI_Event", "PFI_Time")
-    cancerData$Score2 = 1
-    cancerData$Score2[cancerData$Score <= quantile(cancerData$Score, quantile_cutoff)] = 0
-    cancerData$Score = NULL
-    colnames(cancerData) = c("Age", "Sex", "Stage","PFI_Event", "PFI_Time", "Score")
-    sfit = survfit(Surv(PFI_Time,PFI_Event) ~ Score+Age+Sex+Stage, data=cancerData)
-    # Filter out variables with only one level
-    valid_vars <- sapply(cancerData[, c("Score", "Age", "Sex", "Stage")], function(x) length(unique(x)) > 1)
-    filtered_vars <- names(valid_vars)[valid_vars]
-    formula <- as.formula(paste("Surv(PFI_Time, PFI_Event) ~", paste(filtered_vars, collapse = "+")))
-    scox <- coxph(formula, data = cancerData)
-    scox_coef = summary(scox)$coefficients
-    HR_value2 = round(scox_coef[1,2],digit_number) # hazard ratio
-    P_value2= round(scox_coef[1,5],digit_number)
-    HR_low_2 = summary(scox)$conf.int[1,3]
-    HR_up_2 = summary(scox)$conf.int[1,4]
-  }
-  
-  result_Bratio_df[ct_i,1] = ct
-  result_Bratio_df[ct_i,2:9] = c(HR_value1, HR_low_1, HR_up_1, P_value1, HR_value2, HR_low_2, HR_up_2, P_value2)
-}
+GSE200996_all_info_test = na.omit(GSE200996_all_info[c("Group", "Patho_minR")])
 
-# rank OS_HRs
-rownames(result_Bratio_df) = result_Bratio_df$cellType
-result_Bratio_df <- result_Bratio_df[order(result_Bratio_df$HR_OS), ]
+colnames(GSE200996_all_info_test) = c("Group", "ICBR")
 
+wilcox.test(GSE200996_all_info_test$ICBR[GSE200996_all_info_test$Group == "PBMC-High,Tissue-Low"], GSE200996_all_info_test$ICBR[GSE200996_all_info_test$Group %in% c("PBMC-Low,Tissue-High")])
 
+response_rate_df <- GSE200996_all_info_test %>%
+  group_by(Group) %>%
+  summarise(response_rate = mean(ICBR == 1))  # Calculate response rate
 
-
-############################### IGHM expr. prognostic role ###############################
-predictor_colname = "IGHM" 
-result_IGHM_df = data.frame(cellType = character(),
-                       HR_OS = numeric(),
-                       HR_OS_low = numeric(),
-                       HR_OS_up = numeric(),
-                       p_val_OS = numeric(),
-                       HR_PFS = numeric(),
-                       HR_PFS_low = numeric(),
-                       HR_PFS_up = numeric(),
-                       p_val_PFS = numeric())
-
-for (ct_i in 1:length(CancerType_all)){
-  ct = CancerType_all[ct_i]
-  
-  ##### OS 
-  cancerData = Info_all[Info_all$CancerType == ct, c(predictor_colname, "Age", "Sex", "Stage","OS_event", "OS_time")]
-  cancerData = na.omit(cancerData)
-  if (nrow(cancerData) < 10){
-    HR_value1 = NA
-    P_value1 = NA
-  }else{
-    colnames(cancerData) = c("Score",  "Age", "Sex", "Stage","OS_Event", "OS_Time")
-    cancerData$Score2 = 1
-    cancerData$Score2[cancerData$Score <= quantile(cancerData$Score, quantile_cutoff)] = 0
-    cancerData$Score = NULL
-    colnames(cancerData) = c("Age", "Sex", "Stage","OS_Event", "OS_Time", "Score")
-    sfit = survfit(Surv(OS_Time,OS_Event) ~ Score+Age+Sex+Stage, data=cancerData)
-    # Filter out variables with only one level
-    valid_vars <- sapply(cancerData[, c("Score", "Age", "Sex", "Stage")], function(x) length(unique(x)) > 1)
-    filtered_vars <- names(valid_vars)[valid_vars]
-    formula <- as.formula(paste("Surv(OS_Time, OS_Event) ~", paste(filtered_vars, collapse = "+")))
-    scox <- coxph(formula, data = cancerData)
-    scox_coef = summary(scox)$coefficients
-    HR_value1 = round(scox_coef[1,2],digit_number) # hazard ratio
-    
-    P_value1= round(scox_coef[1,5],digit_number)
-    
-    HR_low_1 = summary(scox)$conf.int[1,3]
-    HR_up_1 = summary(scox)$conf.int[1,4]
-  }
-
-  ##### PFI
-  cancerData = Info_all[Info_all$CancerType == ct, c(predictor_colname, "Age", "Sex", "Stage","PFI_event", "PFI_time")]
-  cancerData = na.omit(cancerData)
-  if (nrow(cancerData) < 10){
-    HR_value4 = "NA"
-    P_value4 = "NA"
-  }else{
-    colnames(cancerData) = c("Score",  "Age", "Sex", "Stage","PFI_Event", "PFI_Time")
-    cancerData$Score2 = 1
-    cancerData$Score2[cancerData$Score <= quantile(cancerData$Score, quantile_cutoff)] = 0
-    cancerData$Score = NULL
-    colnames(cancerData) = c("Age", "Sex", "Stage","PFI_Event", "PFI_Time", "Score")
-    sfit = survfit(Surv(PFI_Time,PFI_Event) ~ Score+Age+Sex+Stage, data=cancerData)
-    # Filter out variables with only one level
-    valid_vars <- sapply(cancerData[, c("Score", "Age", "Sex", "Stage")], function(x) length(unique(x)) > 1)
-    filtered_vars <- names(valid_vars)[valid_vars]
-    formula <- as.formula(paste("Surv(PFI_Time, PFI_Event) ~", paste(filtered_vars, collapse = "+")))
-    scox <- coxph(formula, data = cancerData)
-    scox_coef = summary(scox)$coefficients
-    HR_value2 = round(scox_coef[1,2],digit_number) # hazard ratio
-    
-    P_value2= round(scox_coef[1,5],digit_number)
-    
-    HR_low_2 = summary(scox)$conf.int[1,3]
-    HR_up_2 = summary(scox)$conf.int[1,4]
-  }
-  
-  result_IGHM_df[ct_i,1] = ct
-  result_IGHM_df[ct_i,2:9] = c(HR_value1, HR_low_1, HR_up_1, P_value1, HR_value2, HR_low_2, HR_up_2, P_value2)
-}
-
-# rank OS_HRs
-rownames(result_IGHM_df) = result_IGHM_df$cellType
-result_IGHM_df <- result_IGHM_df[order(result_IGHM_df$HR_OS), ]
-
-
-```
-
-
-# Figure S8AB. forest plot of MHRs for Bratio and IGHM
-```{r}
-
-# remove blood cancers
-result_Bratio_df <- result_Bratio_df[!(rownames(result_Bratio_df) %in% c("CNTL","DLBC")), ]
-result_IGHM_df <- result_IGHM_df[!(rownames(result_IGHM_df) %in% c("CNTL","DLBC")), ]
-
-
-test_var = "IGHM" # Bratio IGHM 
-
-if (test_var == "Bratio"){
-  result_df = result_Bratio_df
-}else{
-  result_df = result_IGHM_df
-}
-
-######### forest plot of OS HR and p-value
-plot_data <- tibble::tibble(mean  = result_df[["HR_OS"]],
-                            lower = result_df[["HR_OS_low"]],
-                            upper = result_df[["HR_OS_up"]],
-                            cellType = result_df$cellType,
-                            effSize = round(result_df[["HR_OS"]],3),
-                            pval = result_df[["p_val_OS"]])
-
-options(scipen = 999)
-P_value_raw = plot_data[['pval']]
-
-pval_vec = vector("character", length(P_value_raw))
-for (i in 1:length(P_value_raw)){
-  pval = P_value_raw[i]
-  if (pval>=0.1){
-    pval_vec[i] = as.character(round(pval,2))
-  }else{
-    pval_vec[i] = format(pval, scientific = TRUE, digits = 2)  
-  }
-}
-plot_data$pval = pval_vec
-
-xmin_lim = 0
-xmax_lim = 2
-breaks_x = c(0,1,2)
-labels_x = breaks_x
-
-
-pdf_file <- paste0(fig_dir,paste0("Forest_TCGA_pancancer_",test_var,"_MHR_OS.pdf"))
-fig_width = 4.4
-fig_height = 8
-fontSize = 1.2
-xlabel = "HR of OS"
-
-pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
-plot_data %>%
-  forestplot(labeltext = c("effSize", "cellType", "pval"),
-             graph.pos = 3,
-             boxsize = 0.35,
-             
-             vertices = TRUE,
-             clip = c(xmin_lim, xmax_lim),
-             xlog = FALSE,
-             zero = 1, 
-             
-             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
-             xlab = xlabel, 
-             xticks = breaks_x,
-             
-             graphwidth = unit(3, "cm"),
-             lineheight = unit(2, "cm")
-             ) %>%
-  fp_set_style(box = "black",
-               line = "black",
-               align = "llr", 
-               summary = "black") %>%
-  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
-                cellType = c("Cancer type")|> fp_txt_plain() |> fp_align_left(),
-                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
-
+# Plot the response rate as a barplot
+pdf(file = paste0(result_fig_dir, "Box_GSE200996_PBMC_vs_Tissue_",response_type,"_PK.pdf"), 
+      height = 3.5, width = 4)
+ggplot(response_rate_df, aes(x = Group, y = response_rate)) +
+  geom_bar(stat = "identity", fill = "black") +
+  labs(x = "", y = "Response rate", title = "") +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+  scale_y_continuous(labels = scales::percent)  
 dev.off()
 
+```
 
 
+# Figure S6B. analysis in Cohort11
+```{r}
 
-######### forest plot of PFS HR and p-value
-plot_data <- tibble::tibble(mean  = result_df[["HR_PFS"]],
-                            lower = result_df[["HR_PFS_low"]],
-                            upper = result_df[["HR_PFS_up"]],
-                            cellType = result_df$cellType,
-                            effSize = round(result_df[["HR_PFS"]],3),
-                            pval = result_df[["p_val_PFS"]])
-
-options(scipen = 999)
-P_value_raw = plot_data[['pval']]
-
-pval_vec = vector("character", length(P_value_raw))
-for (i in 1:length(P_value_raw)){
-  pval = P_value_raw[i]
-  if (pval>=0.1){
-    pval_vec[i] = as.character(round(pval,2))
-  }else{
-    pval_vec[i] = format(pval, scientific = TRUE, digits = 2)  
-  }
-}
-plot_data$pval = pval_vec
-
-xmin_lim = 0
-xmax_lim = 2
-breaks_x = c(0,1,2)
-labels_x = breaks_x
+tissue_type = "B_cells_tumor"  # B_cells_stroma B_cells_tumor
 
 
-pdf_file <- paste0(fig_dir,paste0("Forest_TCGA_pancancer_",test_var,"_MHR_PFS.pdf"))
-xlabel = "HR of PFS"
+data_dir = "../02.Input/HNSCC-Amanda/"
+Psyrri_all_info <- read_excel(paste0(data_dir, "HNSCC ITx annotations all assays.xlsx"), sheet = "Sheet1")
+Psyrri_all_info = Psyrri_all_info[c(1,4:8,33,37:102, 105:136)]
+Psyrri_all_info$ICBR = 0
+Psyrri_all_info$ICBR[Psyrri_all_info$BOR %in% c("CR", "PR")] = 1 # , "MR" , "SD"
+Psyrri_all_info$B2ML = Psyrri_all_info$`B Cells count`/(Psyrri_all_info$`Monocytes Count`+Psyrri_all_info$`Lymphocytes Count`)
 
-pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
-plot_data %>%
-  forestplot(labeltext = c("effSize", "cellType", "pval"),
-             graph.pos = 3,
-             boxsize = 0.35,
-             
-             vertices = TRUE,
-             clip = c(xmin_lim, xmax_lim),
-             xlog = FALSE,
-             zero = 1, 
-             
-             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
-             xlab = xlabel, 
-             xticks = breaks_x,
-             
-             graphwidth = unit(3, "cm"),
-             lineheight = unit(2, "cm")
-             ) %>%
-  fp_set_style(box = "black",
-               line = "black",
-               align = "llr", 
-               summary = "black") %>%
-  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
-                cellType = c("Cancer type")|> fp_txt_plain() |> fp_align_left(),
-                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+Psyrri_all_info = Psyrri_all_info[c("ICBR", "B2ML", "CD20+ stroma pre", "CD20+ tumor pre")]
+colnames(Psyrri_all_info) = c("ICBR", "B_cells_PBMC", "B_cells_stroma", "B_cells_tumor")
+Psyrri_all_info_test = Psyrri_all_info[c("ICBR", "B_cells_PBMC", tissue_type)]
+Psyrri_all_info_test = na.omit(Psyrri_all_info_test)
 
+Psyrri_all_info_test$PBMC_Bgroup = ifelse(Psyrri_all_info_test$B_cells_PBMC > median(Psyrri_all_info_test$B_cells_PBMC), "PBMC-High", "PBMC-Low")
+Psyrri_all_info_test$Tissue_Bgroup = ifelse(Psyrri_all_info_test[[tissue_type]] > median(Psyrri_all_info_test[[tissue_type]]), "Tissue-High", "Tissue-Low")
+Psyrri_all_info_test$Group = paste(Psyrri_all_info_test$PBMC_Bgroup, Psyrri_all_info_test$Tissue_Bgroup, sep = ",")
+
+Psyrri_all_info_test = Psyrri_all_info_test[c("Group", "ICBR")]
+wilcox.test(Psyrri_all_info_test$ICBR[Psyrri_all_info_test$Group == "PBMC-High,Tissue-Low"], Psyrri_all_info_test$ICBR[Psyrri_all_info_test$Group %in% c("PBMC-Low,Tissue-High")])
+
+response_rate_df <- Psyrri_all_info_test %>%
+  group_by(Group) %>%
+  summarise(response_rate = mean(ICBR == 1))  # Calculate response rate
+
+# Plot the response rate as a barplot
+pdf(file = paste0(result_fig_dir, "Box_Amanda_PBMC_vs_Tissue_",tissue_type,"_PK.pdf"), 
+      height = 3.5, width = 4)
+ggplot(response_rate_df, aes(x = Group, y = response_rate)) +
+  geom_bar(stat = "identity", fill = "black") +
+  labs(x = "", y = "Response rate", title = "") +
+    theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+          panel.border = element_blank(),  
+          legend.position = "none") +
+  scale_y_continuous(labels = scales::percent)  
 dev.off()
 
 ```

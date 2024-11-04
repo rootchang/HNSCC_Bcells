@@ -1,5 +1,5 @@
 ---
-title: "Correlation of cell abundance between tumor and blood of different immune cell types in two independent HNSCC cohorts"
+title: "Correlation between tumor B cell abundance and various clinical features and ICB biomarkers in Cohort1"
 author: "Tiangen Chang  tiangen.chang@nih.gov"
 output: 
   rmarkdown::html_vignette:
@@ -23,7 +23,8 @@ ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis fon
 
 # Aims:
 
-- study relationship of abundances of different cell types between PBMC and tumor 
+- study relationship between  B cell abundance and other vars in TCGA-HNSC
+- study prognostic roles of B cells and other vars in TCGA-HNSC
 
 
 # load required package
@@ -40,115 +41,111 @@ library(verification)
 library(tibble)
 library(gridExtra)
 library(forestplot)
+library(readxl)
+```
 
-library(dplyr)
+# set the color scale
+```{r}
+
+my.cols <- c("#7CD5C8FF", "#507D41FF", "#DF8F44FF")
+
+```
+
+# set path
+```{r}
+
+data_dir <- "../02.Input/TCGA/TCGA_HNC/"
+processed_dir <- "../03.Results/Data/"
+fig_dir = "../03.Results/Figures/"
+result_fig_dir = fig_dir
+
+```
+
+# extract variables
+```{r}
+
+# Kassandra deconvolution
+Kassandra_info = read.table(file = paste0(data_dir, "HNSC_BG_deconvolution.tsv"), header = T, sep = "\t", row.names = 1) 
+Kassandra_info = data.frame(t(Kassandra_info))
+Kassandra_info$B_cells = Kassandra_info$B_cells * 100
+Kassandra_info$T_cells = Kassandra_info$T_cells * 100
+Kassandra_info$SampleID = gsub("\\.", "-", rownames(Kassandra_info))
+
+# read in ImmuneSubtypes_Thorsson2018Immunity.xlsx
+ImmuneSubtypes_data = read_excel("../02.Input/TCGA/TCGA_all/ImmuneSubtypes_Thorsson2018Immunity.xlsx")
+ImmuneSubtypes_data = data.frame(ImmuneSubtypes_data[1:32]) 
+ImmuneSubtypes_data[5:32] <- lapply(ImmuneSubtypes_data[5:32], as.numeric)
+ImmuneSubtypes_data$Neoantigens = ImmuneSubtypes_data$SNV.Neoantigens + ImmuneSubtypes_data$Indel.Neoantigens
+
+# clinical data (B ratio)
+Clinical_info = read.table(file = paste0(data_dir, "ClinicalInfo/TCGA_HNSC_clinicalInfo_tumor.txt"), header = T, sep = "\t") 
+Clinical_info$Age = Clinical_info$age_at_initial_pathologic_diagnosis
+Clinical_info$Sex = Clinical_info$gender
+Clinical_info$Stage = Clinical_info$Neoplasm.Disease.Stage.American.Joint.Committee.on.Cancer.Code
+Clinical_info$TMB = Clinical_info$TMB..nonsynonymous.
+Clinical_info$FCNA = Clinical_info$Fraction.Genome.Altered
+Clinical_info$AS = Clinical_info$Aneuploidy.Score
+Clinical_info$HPV = Clinical_info$Subtype
+Clinical_info$MSIscore = Clinical_info$MSIsensor.Score
+
+Clinical_info$OS_time = Clinical_info$OS.time
+Clinical_info$OS_event = Clinical_info$OS
+Clinical_info$PFS_time = Clinical_info$PFI.time
+Clinical_info$PFS_event = Clinical_info$PFI
+
+Clinical_info$HPV[Clinical_info$HPV=="HNSC_HPV-"] = "HPV-"
+Clinical_info$HPV[Clinical_info$HPV=="HNSC_HPV+"] = "HPV+"
+Clinical_info$Stage[Clinical_info$Stage %in% c("STAGE IVA", "STAGE IVB", "STAGE IVC")] = "Stage IV"
+Clinical_info$Stage[Clinical_info$Stage %in% c("STAGE I", "STAGE II", "STAGE III")] = "Stage I-III"
+
+Clinical_info = Clinical_info[grepl("-01$", Clinical_info$SampleID),]
+Clinical_info$TCGA.Participant.Barcode = gsub("-01$", "", Clinical_info$SampleID)
+
+# merge
+clinical_info_all = merge(Clinical_info, ImmuneSubtypes_data, by = "TCGA.Participant.Barcode", all.x = T)
+clinical_info_all = merge(clinical_info_all, Kassandra_info, by = "SampleID", all.x = T)
+
+# gene expression data
+geneExpr_TCGA_HNSC = read.table(file =paste0(data_dir, "TPM/TCGA_HNSC_geneExpr_TPM_tumor.txt"), header = T, sep = "\t")
+geneExpr_TCGA_HNSC = geneExpr_TCGA_HNSC[!grepl("^ENSG", rownames(geneExpr_TCGA_HNSC)), ]
+geneExpr_df = log1p(geneExpr_TCGA_HNSC)
+
+# signatures
+geneExpr_df["TLS_sig", ] = colSums(geneExpr_df[c("BCL6","CD86","CXCR4","LAMP3","SELL","CCR7","CXCL13","CCL21","CCL19"),])
+geneExpr_df["IFNG_sig", ] = colSums(geneExpr_df[c("IDO1","CXCL10","CXCL9","HLA-DRA","STAT1","IFNG"),])
+geneExpr_df["Mac_sig", ] = geneExpr_df["CXCL9", ]/geneExpr_df["SPP1", ]
+geneExpr_df["CD8A", ] = geneExpr_df["CD8A", ]
+geneExpr_df["COX1", ] = geneExpr_df["PTGS1", ]
+geneExpr_df["COX2", ] = geneExpr_df["PTGS2", ]
+
+# merge data
+geneExpr_df2 = data.frame(t(geneExpr_df))
+geneExpr_phenotype_TCGA_df = cbind(geneExpr_df2, clinical_info_all)
 
 ```
 
 
-# Set directories & parameters
+# Fig. S4A. boxplot of Sex
 ```{r}
 
-data_dir <- "../02.Input//"
-result_dir <- "../03.Results/Data/"
-result_fig_dir <- "../03.Results/Figures/"
+all_info = na.omit(geneExpr_phenotype_TCGA_df[c("B_cells", "Sex")])
+Bratio_df <- all_info
+Bratio_df$Sex = ifelse(Bratio_df$Sex=="FEMALE", 0, 1)
 
-```
+# Calculate p-value
+p_value <- wilcox.test(B_cells ~ Sex, data = Bratio_df)$p.value
 
-# load cell ratio data
-```{r}
-
-B_columns <- c("MemoryB", "ABC", "NaiveB", "GCB", "PlasmaB","OtherB")
-T_columns <- c("CD8T","OtherT","Thelp","Tregs")
-MonoMac_columns <- c("Monocytes","Macrophages")
-
-# GSE139324
-GSE139324_tumor_ICF_df = read.csv('../02.Input/GSE139324/Tissue_CellProportions_L3.csv', header=TRUE, row.names = 1) 
-GSE139324_tumor_ICF_df$Bcells = rowSums(GSE139324_tumor_ICF_df[intersect(B_columns, colnames(GSE139324_tumor_ICF_df))])
-GSE139324_tumor_ICF_df$Tcells = rowSums(GSE139324_tumor_ICF_df[intersect(T_columns, colnames(GSE139324_tumor_ICF_df))])
-GSE139324_tumor_ICF_df$MonoMac = rowSums(GSE139324_tumor_ICF_df[intersect(MonoMac_columns, colnames(GSE139324_tumor_ICF_df))])
-
-# GSE139324
-GSE139324_PBMC_ICF_df = read.csv('../02.Input/GSE139324/PBMC_CellProportions_L3.csv', header=TRUE, row.names = 1) 
-GSE139324_PBMC_ICF_df$Bcells = rowSums(GSE139324_PBMC_ICF_df[intersect(B_columns, colnames(GSE139324_PBMC_ICF_df))])
-GSE139324_PBMC_ICF_df$Tcells = rowSums(GSE139324_PBMC_ICF_df[intersect(T_columns, colnames(GSE139324_PBMC_ICF_df))])
-GSE139324_PBMC_ICF_df$MonoMac = rowSums(GSE139324_PBMC_ICF_df[intersect(MonoMac_columns, colnames(GSE139324_PBMC_ICF_df))])
-
-# GSE200996
-GSE200996_tumor_ICF_df = read.csv('../02.Input/GSE200996/Tissue_CellProportions_L3.csv', header=TRUE, row.names = 1) 
-GSE200996_tumor_ICF_df$Bcells = rowSums(GSE200996_tumor_ICF_df[intersect(B_columns, colnames(GSE200996_tumor_ICF_df))])
-GSE200996_tumor_ICF_df$Tcells = rowSums(GSE200996_tumor_ICF_df[intersect(T_columns, colnames(GSE200996_tumor_ICF_df))])
-GSE200996_tumor_ICF_df$MonoMac = rowSums(GSE200996_tumor_ICF_df[intersect(MonoMac_columns, colnames(GSE200996_tumor_ICF_df))])
-
-# GSE200996
-GSE200996_PBMC_ICF_df = read.csv('../02.Input/GSE200996/PBMC_CellProportions_L3.csv', header=TRUE, row.names = 1) 
-GSE200996_PBMC_ICF_df$Bcells = rowSums(GSE200996_PBMC_ICF_df[intersect(B_columns, colnames(GSE200996_PBMC_ICF_df))])
-GSE200996_PBMC_ICF_df$Tcells = rowSums(GSE200996_PBMC_ICF_df[intersect(T_columns, colnames(GSE200996_PBMC_ICF_df))])
-GSE200996_PBMC_ICF_df$MonoMac = rowSums(GSE200996_PBMC_ICF_df[intersect(MonoMac_columns, colnames(GSE200996_PBMC_ICF_df))])
-
-```
-
-# Figure S5: correlation of cell ratio between PBMC and tumor (GSE139324, GSE200996)
-```{r}
-
-cell_type_test = "NK" # c("Bcells", "Tcells", "CD8T", "Thelp", "Tregs", "DC", "MonoMac", "NK")
-max_ratio_limit = 40 # Tcells/MonoMac: 100 CD8T/Thelp: 70 Tregs/NK: 40 DC: 18
-
-all_info = GSE139324_tumor_ICF_df[cell_type_test]*100
-all_info$PatientID = rownames(all_info)
-all_info = all_info[6:nrow(all_info),]
-all_info$PatientID <- sub("_TIL$", "", all_info$PatientID)
-colnames(all_info) = c("Tumor_ratio", "PatientID")
-
-all_info2 = GSE139324_PBMC_ICF_df[cell_type_test]*100
-all_info2$PatientID = rownames(all_info2)
-all_info2 = all_info2[7:nrow(all_info2),]
-all_info2$PatientID <- sub("_PBMC$", "", all_info2$PatientID)
-colnames(all_info2) = c("PBMC_ratio", "PatientID")
-all_info_GSE139324 = merge(all_info, all_info2, by = "PatientID", all.x = T)
-
-
-
-all_info = GSE200996_tumor_ICF_df[cell_type_test]*100
-all_info$PatientID = rownames(all_info)
-all_info$PatientID <- sub("_pre_tumor$", "_pre", all_info$PatientID)
-all_info$PatientID <- sub("_post_tumor$", "_post", all_info$PatientID)
-colnames(all_info) = c("Tumor_ratio", "PatientID")
-
-all_info2 = GSE200996_PBMC_ICF_df[cell_type_test]*100
-all_info2$PatientID = rownames(all_info2)
-all_info2$PatientID <- sub("-B1$", "_pre", all_info2$PatientID)
-all_info2$PatientID <- sub("-B2$", "_post", all_info2$PatientID)
-colnames(all_info2) = c("PBMC_ratio", "PatientID")
-
-all_info_GSE200996 = merge(all_info, all_info2, by = "PatientID", all.x = T)
-all_info_GSE200996 = na.omit(all_info_GSE200996)
-
-
-
-
-# Calculate correlation coefficients and p-values
-cor_139324 <- cor.test(all_info_GSE139324$Tumor_ratio, all_info_GSE139324$PBMC_ratio)
-cor_200996 <- cor.test(all_info_GSE200996$Tumor_ratio, all_info_GSE200996$PBMC_ratio)
-
-# Create plot
-pdf_file <- paste0(result_fig_dir,paste0("PBMC_vs_tumor_",cell_type_test,"_ratio_corr_sc.pdf"))
-fig_width = 2.7
+# Create boxplot
+pdf_file <- paste0(result_fig_dir,paste0("Bratio_Sex_TCGA.pdf"))
+fig_width = 1.5
 fig_height = 2.7
 fontSize = 1.2
-xlabel = "Tumor (%)" # B-to-immune cell ratio 
-ylabel = "PBMC (%)" # B-to-immune cell ratio 
 
-p <- ggplot() +
-  # Points and fit line for all_info_GSE139324
-  geom_point(data = all_info_GSE139324, aes(x = Tumor_ratio, y = PBMC_ratio), color = "#E69F00") +
-  geom_smooth(data = all_info_GSE139324, aes(x = Tumor_ratio, y = PBMC_ratio), method = "lm", color = "#E69F00", se = FALSE) +
-  # Points and fit line for all_info_GSE200996
-  geom_point(data = all_info_GSE200996, aes(x = Tumor_ratio, y = PBMC_ratio), color = "#56B4E9") +
-  geom_smooth(data = all_info_GSE200996, aes(x = Tumor_ratio, y = PBMC_ratio), method = "lm", color = "#56B4E9", se = FALSE) +
-  # Labels and theme
-  labs(x = xlabel, y = ylabel) +
-  coord_cartesian(xlim = c(0, max_ratio_limit),ylim = c(0, max_ratio_limit)) + 
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  geom_boxplot(data = Bratio_df, aes(x = factor(Sex, level=c(0, 1)), y = B_cells), fill = my.cols[1:2],outlier.shape = NA) +
+  geom_point(data = Bratio_df, aes(x = Sex + 1 + runif(length(B_cells), min = -0.2, max = 0.2), y = B_cells), size = 0.3) +
+  labs(x = "", y = "B cell abundance (%)") +
   theme(panel.grid = element_blank(), 
         panel.background = element_rect(fill = "white"),
         axis.line.y = element_line(color="black"),
@@ -158,13 +155,644 @@ p <- ggplot() +
         axis.text.y = element_text(color="black"),
         axis.text.x = element_text(color="black"),
         panel.border = element_blank(), 
-        )
-
-# Add correlation coefficients and p-values
-p2 <- p + 
-  annotate("text", x = 0, y = 85*max_ratio_limit/100, label = sprintf("r = %.2f, p = %.2g", cor_139324$estimate, cor_139324$p.value), color = "#E69F00", hjust = 0) +
-  annotate("text", x = 0, y = 95*max_ratio_limit/100, label = sprintf("r = %.2f, p = %.2g", cor_200996$estimate, cor_200996$p.value), color = "#56B4E9", hjust = 0)
-
-ggsave(pdf_file, plot = p2, width = fig_width, height = fig_height)
+        legend.position = "none")
+dev.off()
 
 ```
+
+# Fig. S4A. boxplot of Age
+```{r}
+
+all_info = na.omit(geneExpr_phenotype_TCGA_df[c("B_cells", "Age")])
+Bratio_df <- all_info
+Bratio_df$Age = ifelse(Bratio_df$Age < 60, 0, 1)
+
+# Calculate p-value
+p_value <- wilcox.test(B_cells ~ Age, data = Bratio_df)$p.value
+
+# Create boxplot
+pdf_file <- paste0(result_fig_dir,paste0("Bratio_Age_TCGA.pdf"))
+fig_width = 1.5
+fig_height = 2.7
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  geom_boxplot(data = Bratio_df, aes(x = factor(Age, level=c(0, 1)), y = B_cells), fill = my.cols[1:2],outlier.shape = NA) +
+  geom_point(data = Bratio_df, aes(x = Age + 1 + runif(length(B_cells), min = -0.2, max = 0.2), y = B_cells), size = 0.3) +
+  labs(x = "", y = "B cell abundance (%)") +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        legend.position = "none")
+dev.off()
+
+```
+
+# Fig. S4A. boxplot of stage
+```{r}
+
+all_info = na.omit(geneExpr_phenotype_TCGA_df[c("B_cells", "Stage")])
+Bratio_df <- all_info
+Bratio_df$Stage = ifelse(Bratio_df$Stage=="Stage IV", 1, 0)
+
+# Calculate p-value
+p_value <- wilcox.test(B_cells ~ Stage, data = Bratio_df)$p.value
+
+# Create boxplot
+pdf_file <- paste0(result_fig_dir,paste0("Bratio_Stage_TCGA.pdf"))
+fig_width = 1.5
+fig_height = 2.7
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot() +
+  geom_boxplot(data = Bratio_df, aes(x = factor(Stage, level=c(0, 1)), y = B_cells), fill = my.cols[1:2],outlier.shape = NA) +
+  geom_point(data = Bratio_df, aes(x = Stage + 1 + runif(length(B_cells), min = -0.2, max = 0.2), y = B_cells), size = 0.3) +
+  labs(x = "", y = "B cell abundance (%)") +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_text(color="black"),
+        panel.border = element_blank(), 
+        legend.position = "none")
+dev.off()
+
+```
+
+# Fig. S4A. boxplot of HPV
+```{r}
+
+all_info = geneExpr_phenotype_TCGA_df[c("B_cells", "HPV")]
+all_info$HPV[is.na(all_info$HPV)] = "Unknown"
+all_info$HPV = factor(all_info$HPV, levels = c("HPV-", "Unknown", "HPV+"))
+all_info = na.omit(all_info)
+Bratio_df <- all_info
+
+# Calculate p-value
+Bratio_df1 = Bratio_df[Bratio_df$HPV != "HPV+", ]
+p_value <- wilcox.test(B_cells ~ HPV, data = Bratio_df1)$p.value
+
+# Create boxplot
+pdf_file <- paste0(result_fig_dir,paste0("Bratio_HPV_TCGA.pdf"))
+fig_width = 1.5*1.25
+fig_height = 2.7
+fontSize = 1.2
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(Bratio_df, aes(x = HPV, y = B_cells)) +
+  geom_boxplot(data = Bratio_df, aes(x = HPV, y = B_cells), fill = my.cols[1:3],outlier.shape = NA) +
+  geom_point(position = position_jitter(width = 0.2), size = 0.3) +
+  
+  labs(x = "", y = "B abundance (%)") +
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color="black"),
+        axis.line.x = element_line(color="black"),
+        axis.ticks.y = element_line(color="black"),
+        axis.ticks.x = element_line(color="black"),
+        axis.text.y = element_text(color="black"),
+        axis.text.x = element_blank(), 
+        panel.border = element_blank(), 
+        )
+dev.off()
+
+```
+
+# Fig. S4B. forest plot of B with clinical vars (HPV, age, sex, stage)
+```{r}
+
+Outcome_all = c("OS_time", "OS_event", "PFS_time", "PFS_event")
+columns_keep = c('B_cells', Outcome_all, "Age", "Sex", "Stage", "HPV")
+
+all_info = geneExpr_phenotype_TCGA_df[columns_keep]
+
+result_df = data.frame(Variable = character(),
+                       HR_OS = numeric(),
+                       HR_OS_low = numeric(),
+                       HR_OS_up = numeric(),
+                       p_val_OS = numeric(),
+                       HR_PFS = numeric(),
+                       HR_PFS_low = numeric(),
+                       HR_PFS_up = numeric(),
+                       p_val_PFS = numeric())
+result_df[5,]=NA
+cancerData_all = all_info
+
+cn = 'B_cells'
+Score_Pred = cancerData_all[[cn]]
+Score=Score_Pred
+exp_cutoff = quantile(Score_Pred, 0.5)
+Score[Score_Pred>exp_cutoff]="High"
+Score[Score_Pred<=exp_cutoff]="Low"
+Score <- factor(Score)
+Score <- relevel(Score, ref = "Low")
+##### OS
+cancerData=data.frame(Score,cancerData_all[c("Age", "Sex", "Stage", "HPV","OS_time","OS_event")])
+colnames(cancerData) = c("Score","Age", "Sex", "Stage", "HPV","OS_time","OS_event")
+cancerData = na.omit(cancerData)
+sfit <- survfit(Surv(OS_time, OS_event) ~ Score + Age + Sex + Stage + HPV, data=cancerData)
+scox_OS <- coxph(Surv(OS_time, OS_event)~Score + Age + Sex + Stage + HPV, data=cancerData)
+scox_coef_OS = summary(scox_OS)$coefficients
+
+
+##### PFS
+cancerData=data.frame(Score,cancerData_all[c("Age", "Sex", "Stage", "HPV","PFS_time","PFS_event")])
+colnames(cancerData) = c("Score","Age", "Sex", "Stage", "HPV","PFS_time","PFS_event")
+cancerData = na.omit(cancerData)
+sfit <- survfit(Surv(PFS_time, PFS_event) ~ Score + Age + Sex + Stage + HPV, data=cancerData)
+scox_PFS <- coxph(Surv(PFS_time, PFS_event)~Score + Age + Sex + Stage + HPV, data=cancerData)
+scox_coef_PFS = summary(scox_PFS)$coefficients
+
+result_df[,1] = c('B_cells', "Age", "Sex", "Stage", "HPV")
+result_df[,2] = scox_coef_OS[,2]
+result_df[,3] = summary(scox_OS)$conf.int[,3]
+result_df[,4] = summary(scox_OS)$conf.int[,4]
+result_df[,5] = scox_coef_OS[,5]
+result_df[,6] = scox_coef_PFS[,2]
+result_df[,7] = summary(scox_PFS)$conf.int[,3]
+result_df[,8] = summary(scox_PFS)$conf.int[,4]
+result_df[,9] = scox_coef_PFS[,5]
+
+######### forest plot of OS HR and p-value
+plot_data <- tibble::tibble(mean  = result_df[["HR_OS"]],
+                            lower = result_df[["HR_OS_low"]],
+                            upper = result_df[["HR_OS_up"]],
+                            Variable = result_df$Variable,
+                            effSize = round(result_df[["HR_OS"]],3),
+                            pval = result_df[["p_val_OS"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else{
+    pval_vec[i] = format(pval, scientific = TRUE, digits = 2) 
+  }
+}
+
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 2
+breaks_x = c(0,1,2)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_TCGA_B_clinicalVARs_MHR_OS.pdf"))
+fig_width = 4.4
+fig_height = 3.9
+fontSize = 1.2
+xlabel = "HR of OS"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "Variable", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 1, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
+                Variable = c("Variable")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+
+
+
+######### forest plot of PFS HR and p-value
+plot_data <- tibble::tibble(mean  = result_df[["HR_PFS"]],
+                            lower = result_df[["HR_PFS_low"]],
+                            upper = result_df[["HR_PFS_up"]],
+                            Variable = result_df$Variable,
+                            effSize = round(result_df[["HR_PFS"]],3),
+                            pval = result_df[["p_val_PFS"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.1){
+    pval_vec[i] = as.character(round(pval,2))
+  }else{
+    pval_vec[i] = format(pval, scientific = TRUE, digits = 2) 
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 2
+breaks_x = c(0,1,2)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_TCGA_B_clinicalVARs_HR_PFS.pdf"))
+xlabel = "HR of PFS"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "Variable", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 1, 
+             
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
+                Variable = c("Variable")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+```
+
+# Fig. S4C. K-M OS curves for four groups (Bratio and HPV)
+```{r}
+
+info_df = geneExpr_phenotype_TCGA_df[c("B_cells", "HPV","OS_event", "OS_time", "PFS_event", "PFS_time")]
+
+info_df = na.omit(info_df)
+info_df$OS_time = info_df$OS_time/30
+info_df$PFS_time = info_df$PFS_time/30
+colnames(info_df) = c("Babundance", "HPV","OS_Event", "OS_Months", "PFS_Event", "PFS_Months")
+
+info_df$HPV[info_df$HPV=="HNSC_HPV-"] = "HPV-"
+info_df$HPV[info_df$HPV=="HNSC_HPV+"] = "HPV+"
+
+info_df$Bratio[info_df$Babundance>quantile(info_df$Babundance,0.5)] = "B-H"
+info_df$Bratio[info_df$Babundance<=quantile(info_df$Babundance,0.5)] = "B-L"
+
+plot_df <- info_df %>% mutate(Bratio_HPV_group = paste0(Bratio, "/", HPV))
+plot_df$Bratio_HPV_group = factor(plot_df$Bratio_HPV_group, levels = c("B-H/HPV+", "B-H/HPV-", "B-L/HPV+", "B-L/HPV-"))
+
+pdf(paste0(fig_dir,"KM_Bratio_HPV_TCGA_HNSC_OS.pdf"), width = 5*0.8, height = 3.8, onefile = F) 
+plot_font_size = 9
+risktable_font_size = 3
+ggsurvplot(survfit(Surv(OS_Months, OS_Event) ~ Bratio_HPV_group, data = plot_df), pval = F, 
+          palette = plasma(4),
+          risk.table=TRUE,
+          risk.table.height = 0.25, 
+          risk.table.col="black",
+          risk.table.y.text = FALSE, 
+          tables.y.text = FALSE, 
+          tables.theme = theme_cleantable(),
+         xlab = 'Time (months)', ylab = 'OS probability',
+         legend = c(0.45, 0.88),
+         legend.text = element_text(size = plot_font_size, color = "black"),
+         legend.labs = c("B-H/HPV+", "B-H/HPV-", "B-L/HPV+", "B-L/HPV-"),
+         ggtheme = theme(
+                         panel.background = element_rect(fill='white'), 
+                         plot.background = element_rect(fill='white', color=NA), 
+                         legend.background = element_rect(fill='transparent', color=NA), 
+                         legend.box.background = element_rect(fill='transparent', color=NA), 
+                         legend.key = element_rect(fill='transparent', color=NA),
+                         plot.margin = unit(c(0.2, 0.2, 0.2, 0.2),"cm"),
+                         panel.grid.major = element_blank(), 
+                         panel.grid.minor = element_blank(),
+                         panel.border = element_blank(),
+                         axis.line = element_line(colour = "black"),
+                         axis.text.x = element_text(colour = "black", size = plot_font_size),
+                        axis.text.y = element_text(colour = "black", size = plot_font_size),
+                        axis.title.x = element_text(size = plot_font_size),
+                        axis.title.y = element_text(size = plot_font_size),
+                        legend.text = element_text(size = plot_font_size),
+                        legend.title = element_text(size = plot_font_size),
+                        plot.title = element_text(size = plot_font_size),
+                        plot.subtitle = element_text(size = plot_font_size),
+                        plot.caption = element_text(size = plot_font_size)
+                         ),  
+        risk.table.fontsize = risktable_font_size,
+        pval.method = T) 
+labs(color = "")
+dev.off()
+
+##### HR and p-value comparison
+cancerData=data.frame(info_df$Bratio,info_df$OS_Months,info_df$OS_Event)
+colnames(cancerData) = c("Score", "OS_Months", "OS_Event")
+sfit = survfit(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('Bratio OS: ', format(P_value, scientific = TRUE),HR_value), collapse= " "))
+
+cancerData=data.frame(info_df$HPV,info_df$OS_Months,info_df$OS_Event)
+colnames(cancerData) = c("Score", "OS_Months", "OS_Event")
+sfit = survfit(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox = coxph(Surv(OS_Months,OS_Event) ~ Score, data=cancerData)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+HR_CI = exp(confint(scox))
+print(paste(c('HPV OS: ', P_value,HR_value), collapse= " "))
+
+##### p values between 4 different groups
+plot_df$Bratio_HPV_group = as.character(plot_df$Bratio_HPV_group)
+
+plot_df_temp = plot_df[plot_df$Bratio_HPV_group=='B-H/HPV+' | plot_df$Bratio_HPV_group=='B-L/HPV+', ] # B-H/HPV- B-L/HPV- B-H/HPV+ B-L/HPV+
+scox = coxph(Surv(plot_df_temp$OS_Months,plot_df_temp$OS_Event)~Bratio_HPV_group, data=plot_df_temp)
+scox_coef = summary(scox)$coefficients
+HR_value = scox_coef[2] # hazard ratio
+Z_value=scox_coef[4]
+P_value=scox_coef[5]
+print(paste(c(P_value,HR_value), collapse= " "))
+
+```
+
+
+# Fig. S4D. barplot of SCC correlation and p values between Bratio and TLS_sig/CD8A/IFNG_sig/CXCL9_SPP1/Tcells...
+```{r}
+
+vars_for_test = c("SNV.Neoantigens", "Indel.Neoantigens", "Neoantigens", "TMB", "MSIscore", "FCNA", "AS", "TLS_sig", "IFNG_sig", "Mac_sig", "T_cells", "CD8A", "CXCL9", "PTGS2") 
+vars_for_test_display = c("SNV neoantigens", "Indel neoantigens", "Total neoantigens", "TMB", "MSI score", "FCNA", "Aneuploidy score", "TLS signature", "IFNG signature", "CXCL9/SPP1", "T cell abundance", "CD8A", "CXCL9", "PTGS2") 
+
+# Data frame to store results
+results_df <- data.frame(Variable = vars_for_test_display, SCC = numeric(length(vars_for_test)), 
+                         p_value = numeric(length(vars_for_test)))
+
+# Calculate SCC and p-values for each variable
+for (i in seq_along(vars_for_test)) {
+  var <- vars_for_test[i]
+  correlation <- cor.test(geneExpr_phenotype_TCGA_df$B_cells, geneExpr_phenotype_TCGA_df[[var]], method = "spearman")
+  
+  # Store results
+  results_df$SCC[i] <- correlation$estimate
+  results_df$p_value[i] <- correlation$p.value
+}
+
+# Add a significance level for p-values to use in annotation
+results_df$significance <- ifelse(results_df$p_value < 0.001, "***", 
+                                  ifelse(results_df$p_value < 0.01, "**", 
+                                         ifelse(results_df$p_value < 0.05, "*", "ns")))
+
+
+
+# Create a barplot with SCC on the x-axis and annotate p-values
+pdf_file <- paste0(result_fig_dir,paste0("barplot_Bratio_vs_otherFeatures_TCGA.pdf"))
+fig_width = 5.5
+fig_height = 3.5
+fontSize = 1.2
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+ggplot(results_df, aes(x = reorder(Variable, SCC), y = SCC)) +
+  geom_bar(stat = "identity", fill = "#D3D3D3") +
+  geom_text(aes(label = paste0("p = ", format(p_value, digits = 2))), 
+            hjust = -0.1, vjust = 0.5, size = 3, color = "black", angle = 0) +
+  labs(x = "Feature", y = "Spearman correlation coefficient with B cell abundance", title = "") +
+  scale_y_continuous(limits = c(-0.25, 0.7), expand = expansion(mult = c(0.05, 0.25))) +  
+  theme(panel.grid = element_blank(), 
+        panel.background = element_rect(fill = "white"),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.text.y = element_text(color = "black"),
+        axis.text.x = element_text(color = "black"),
+        panel.border = element_blank()) +  
+  coord_flip() 
+  
+dev.off()
+
+```
+
+
+# Fig. S4E. forest plot for TLS_sig/CD8A/IFNG_sig/CXCL9_SPP1/Tcells MHRs controlling (HPV, age, sex, stage)
+```{r}
+
+cellType_all = vars_for_test
+cellType_all_show = vars_for_test_display
+cellType_mapping <- setNames(cellType_all_show, cellType_all)
+
+Outcome_all = c("OS_time", "OS_event", "PFS_time", "PFS_event")
+
+columns_keep = c(cellType_all, Outcome_all, "Age", "Sex", "Stage", "HPV")
+
+all_info = geneExpr_phenotype_TCGA_df[columns_keep]
+
+colnames(all_info) = c(cellType_all, "OS_time", "OS_event", "PFS_time", "PFS_event", "Age", "Sex", "Stage", "HPV")
+
+result_df = data.frame(cellType = character(),
+                       HR_OS = numeric(),
+                       HR_OS_low = numeric(),
+                       HR_OS_up = numeric(),
+                       p_val_OS = numeric(),
+                       HR_PFS = numeric(),
+                       HR_PFS_low = numeric(),
+                       HR_PFS_up = numeric(),
+                       p_val_PFS = numeric())
+
+cancerData_all = all_info
+for (cn_i in 1:length(cellType_all)){
+  cn = cellType_all[cn_i]
+  cancerData=data.frame(cancerData_all[c(cn, "Age", "Sex", "Stage", "HPV","OS_time","OS_event")])
+  cancerData = na.omit(cancerData)
+  cancerData[[cn]] = ifelse(cancerData[[cn]] > quantile(cancerData[[cn]], 0.5), "High", "Low")
+  cancerData[[cn]] <- factor(cancerData[[cn]])
+  cancerData[[cn]] <- relevel(cancerData[[cn]], ref = "Low")
+  ##### OS
+  colnames(cancerData) = c("Score","Age", "Sex", "Stage", "HPV","OS_time","OS_event")
+  sfit <- survfit(Surv(OS_time, OS_event) ~ Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox <- coxph(Surv(OS_time, OS_event)~Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox_coef = summary(scox)$coefficients
+  HR_value1 = scox_coef[1,2] # hazard ratio
+  Z_value=scox_coef[1,4]
+  P_value1=scox_coef[1,5]
+  HR_low_1 = summary(scox)$conf.int[1,3]
+  HR_up_1 = summary(scox)$conf.int[1,4]
+  
+  ##### PFS
+  cn = cellType_all[cn_i]
+  cancerData=data.frame(cancerData_all[c(cn, "Age", "Sex", "Stage", "HPV","PFS_time","PFS_event")])
+  cancerData = na.omit(cancerData)
+  cancerData[[cn]] = ifelse(cancerData[[cn]] > quantile(cancerData[[cn]], 0.5), "High", "Low")
+  cancerData[[cn]] <- factor(cancerData[[cn]])
+  cancerData[[cn]] <- relevel(cancerData[[cn]], ref = "Low")
+  colnames(cancerData) = c("Score","Age", "Sex", "Stage", "HPV","PFS_time","PFS_event")
+  sfit <- survfit(Surv(PFS_time, PFS_event) ~ Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox <- coxph(Surv(PFS_time, PFS_event)~Score + Age + Sex + Stage + HPV, data=cancerData)
+  scox_coef = summary(scox)$coefficients
+  HR_value2 = scox_coef[1,2] # hazard ratio
+  Z_value =scox_coef[1,4]
+  P_value2 =scox_coef[1,5]
+  HR_low_2 = summary(scox)$conf.int[1,3]
+  HR_up_2 = summary(scox)$conf.int[1,4]
+
+  result_df[cn_i,1] = cn
+  result_df[cn_i,2:9] = c(HR_value1, HR_low_1, HR_up_1, P_value1, HR_value2, HR_low_2, HR_up_2, P_value2)
+}
+# rank OS_HRs
+result_df <- result_df[order(result_df$HR_OS + result_df$HR_PFS), ]
+result_df$cellType <- cellType_mapping[result_df$cellType]
+
+
+######### forest plot of OS HR and p-value
+plot_data <- tibble::tibble(mean  = result_df[["HR_OS"]],
+                            lower = result_df[["HR_OS_low"]],
+                            upper = result_df[["HR_OS_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["HR_OS"]],3),
+                            pval = result_df[["p_val_OS"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.01){
+    pval_vec[i] = as.character(round(pval,2))
+  }else{
+    pval_vec[i] = format(pval, scientific = TRUE, digits = 2) 
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 2
+breaks_x = c(0,1,2)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_TCGA_otherSignatures_MHR_OS.pdf"))
+fig_width = 4.4*1.1
+fig_height = 3.9
+fontSize = 1.2
+xlabel = "HR of OS"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 1, 
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Feature")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+
+
+
+######### forest plot of PFS HR and p-value
+plot_data <- tibble::tibble(mean  = result_df[["HR_PFS"]],
+                            lower = result_df[["HR_PFS_low"]],
+                            upper = result_df[["HR_PFS_up"]],
+                            cellType = result_df$cellType,
+                            effSize = round(result_df[["HR_PFS"]],3),
+                            pval = result_df[["p_val_PFS"]])
+
+options(scipen = 999)
+P_value_raw = plot_data[['pval']]
+
+pval_vec = vector("character", length(P_value_raw))
+for (i in 1:length(P_value_raw)){
+  pval = P_value_raw[i]
+  if (pval>=0.01){
+    pval_vec[i] = as.character(round(pval,2))
+  }else{
+    pval_vec[i] = format(pval, scientific = TRUE, digits = 2) 
+  }
+}
+plot_data$pval = pval_vec
+
+xmin_lim = 0
+xmax_lim = 2
+breaks_x = c(0,1,2)
+labels_x = breaks_x
+
+
+pdf_file <- paste0(result_fig_dir,paste0("Forest_TCGA_otherSignatures_MHR_PFS.pdf"))
+xlabel = "HR of PFS"
+
+pdf(pdf_file, onefile=FALSE, width = fig_width,height=fig_height)
+plot_data %>%
+  forestplot(labeltext = c("effSize", "cellType", "pval"),
+             graph.pos = 3,
+             boxsize = 0.35,
+             
+             vertices = TRUE,
+             clip = c(xmin_lim, xmax_lim),
+             xlog = FALSE,
+             zero = 1, 
+             txt_gp = fpTxtGp(ticks=gpar(cex=fontSize),xlab=gpar(cex=fontSize),label=gpar(cex=fontSize),legend=gpar(cex=fontSize),title=gpar(cex=fontSize)), 
+             xlab = xlabel, 
+             xticks = breaks_x,
+             
+             graphwidth = unit(3, "cm"),
+             lineheight = unit(2, "cm")
+             ) %>%
+  fp_set_style(box = "black",
+               line = "black",
+               align = "llr", 
+               summary = "black") %>%
+  fp_add_header(effSize = c("HR")|> fp_txt_plain() |> fp_align_left(),
+                cellType = c("Feature")|> fp_txt_plain() |> fp_align_left(),
+                pval = c("P-value")|> fp_txt_plain() |> fp_align_right())
+
+dev.off()
+
+```
+
+
+

@@ -397,7 +397,7 @@ dev.off()
 ```
 
 
-# Figure 2CD - Figure S16AB. OS/PFS K-M curves for TCGA-HNC
+# Figure 2CD - Figure S4AB. OS/PFS K-M curves for TCGA-HNC
 ```{r}
 
 Bcell_high_vs_low_cutoff = 0.5 # 0.333, 0.5
@@ -665,7 +665,7 @@ print(wilcox.test(all_info$`B cells`[all_info$ICB_R==1], all_info$`B cells`[all_
 
 ```
 
-# Figure 2GH (Bcell_high_vs_low_cutoff = 0.5) and Figure S16CD (Bcell_high_vs_low_cutoff = 0.333). OS/PFS K-M curves for merged HNSCC Cohorts2-4 
+# Figure 2GH (Bcell_high_vs_low_cutoff = 0.5) and Figure S4CD (Bcell_high_vs_low_cutoff = 0.333). OS/PFS K-M curves for merged HNSCC Cohorts2-4 
 ```{r}
 
 Bcell_high_vs_low_cutoff = 0.5 # 0.333, 0.5

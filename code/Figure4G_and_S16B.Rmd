@@ -655,7 +655,7 @@ result_AUC_df$`Monocytes/Lymphocytes` = 1 - result_AUC_df$`Monocytes/Lymphocytes
 ```
 
 
-# Figure 4G (AUCs of biomarkers) and S14B (AUCs of genes). barplot of AUCs 
+# Figure 4G (AUCs of biomarkers) and S16B (AUCs of genes). barplot of AUCs 
 ```{r}
 
 #### add tumor B, blood B, bulk B, sc B

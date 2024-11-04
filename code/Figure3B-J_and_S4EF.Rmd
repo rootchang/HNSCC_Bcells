@@ -713,7 +713,7 @@ dev.off()
 
 ```
 
-# Figure 3GH (right panels; cutoff = 5.5%) and Figure S16GH (cutoff = 4%,5%,6%,7%). odds ratio of response rates by PBMC B ratio (Cohort7)
+# Figure 3GH (right panels; cutoff = 5.5%) and Figure S4EF (cutoff = 4%,5%,6%,7%). odds ratio of response rates by PBMC B ratio (Cohort7)
 ```{r}
 
 test_phenotype = "RECIST_R" # "RECIST_R", "Patho_minR"

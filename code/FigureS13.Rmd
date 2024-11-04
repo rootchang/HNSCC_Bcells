@@ -1,0 +1,144 @@
+---
+title: "Immune cells exhibit enhanced expression of anti-tumor related genes in B-high samples (Cohort6)"
+author: "Tiangen Chang  tiangen.chang@nih.gov"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      comment = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE)
+require(ggplot2)
+ggplot2::theme_set(new = theme_bw(base_size = 12)) # sets the theme and axis font size
+```
+
+
+# Aims:
+
+- Expression of anti-tumor related genes in different cells types from B-high vs B-low tumors in Cohort6
+
+
+# load required package
+```{r, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(openxlsx)
+library(readxl)
+
+library(tidyr)
+library(ggrepel)
+
+```
+
+# parameters and constants
+```{r}
+Bhigh_percentile = 0.5
+Blow_percentile = 0.5
+min_cellNum = 10 # min cell number for pseudobulk gene expression
+
+```
+
+# load .rds (Cohort6)
+```{r}
+
+dataset_name = 'GSE234933'
+data_dir <- "../02.Input//"
+result_dir <- "../03.Results/Data/"
+result_fig_dir <- "../03.Results/Figures/"
+data_dir <- paste0(data_dir, dataset_name, '/')
+seurat_suffix = 'Tissue'
+merged_seu_GSE234933 = readRDS(file = paste0(data_dir,"seu_",seurat_suffix,".rds"))
+
+```
+
+# identify Bhigh vs Blow tumors
+```{r}
+
+######## identify B-high (top 50%) and B-low (bottom 50%) tumors
+ICF_df = read.csv(file = paste0(data_dir,"Tissue_CellProportions_L2_L3_merged.csv"),header = T, row.names = 1)
+ICF_df$sample = rownames(ICF_df)
+B_high_samples = ICF_df$sample[ICF_df$B_cells > quantile(ICF_df$B_cells, Bhigh_percentile)]
+B_low_samples = ICF_df$sample[ICF_df$B_cells < quantile(ICF_df$B_cells, Blow_percentile)]
+
+
+subset_seu_GSE234933 = subset(merged_seu_GSE234933, subset = meta %in% c(B_high_samples,B_low_samples))
+subset_seu_GSE234933$Bhigh = 1
+subset_seu_GSE234933$Bhigh[subset_seu_GSE234933$sample %in% B_low_samples] = 0
+
+merged_seu_GSE234933 = subset_seu_GSE234933
+
+```
+
+
+# Figure S11. boxplot of expression of key genes in Mac, B, and CD8T cells (Bhigh vs Blow)
+```{r}
+
+test_celltype = "Macrophages" # T_cells Macrophages B_cells
+if (test_celltype == "B_cells"){
+  subset_seu_GSE234933 = subset(merged_seu_GSE234933, subset = cellType_origin_L2 %in% c(test_celltype))
+  test_gene_vec = c("HLA-DRB1", "CD40", "CD80", "CD86", "TGFB1") 
+}else if (test_celltype == "T_cells"){
+  subset_seu_GSE234933 = subset(merged_seu_GSE234933, subset = cellType_origin_L2 %in% c(test_celltype))
+  test_gene_vec = c("TCF7","CCR7","SELL","IL10", "TGFB1")
+}else if (test_celltype == "Macrophages"){
+  subset_seu_GSE234933 = subset(merged_seu_GSE234933, subset = cellType_origin_L2 %in% c(test_celltype))
+  test_gene_vec = c("CXCL9", "HLA-DRB1", "CD86", "CD80", "SPP1", "CD36") 
+}
+
+
+cell_counts <- table(subset_seu_GSE234933$meta) 
+keep_samples = names(cell_counts)[cell_counts >= min_cellNum]
+subset_seu = subset(subset_seu_GSE234933, subset = meta %in% keep_samples) 
+pseudobulk <- AverageExpression(subset_seu, features = rownames(subset_seu), slot = "data", group.by = "meta")
+df_pseudobulk <- as.data.frame(pseudobulk$RNA*100) # to TPM
+
+keyGene_df = df_pseudobulk[test_gene_vec, ] 
+keyGene_df = log1p(keyGene_df)
+keyGene_df = data.frame(t(keyGene_df))
+keyGene_df$ID = rownames(keyGene_df)
+
+keyGene_df$B_score = NA
+keyGene_df$B_score[keyGene_df$ID %in% B_high_samples] = 1
+keyGene_df$B_score[keyGene_df$ID %in% B_low_samples] = 0
+
+all_info_df = keyGene_df
+
+
+for (test_gene in test_gene_vec) {
+  test_gene_temp = gsub("-",".",test_gene)
+  all_info <- all_info_df[c("B_score", test_gene_temp)]
+  colnames(all_info) <- c("B_score", "test_gene_value")
+  
+  pdf(file = paste0(result_fig_dir, "Box_GSE234933_",test_celltype,"_", test_gene, "_Bhigh_vs_Blow.pdf"), height = 2*1.15, width = 1.6*1.15)
+  
+  p <- ggplot(data = all_info) +
+    geom_boxplot(aes(x = factor(B_score, levels = c(0, 1)), y = test_gene_value, fill = factor(B_score, levels = c(0, 1))), outlier.shape = NA) +
+    geom_point(aes(x = B_score + 1 + runif(length(test_gene_value), min = -0.2, max = 0.2), y = test_gene_value)) +
+    labs(x = "", y = paste0(test_gene, " (log[TPM+1])")) +
+    scale_x_discrete(labels = c("0" = "Blow", "1" = "Bhigh")) + 
+    theme(panel.grid = element_blank(), 
+          panel.background = element_rect(fill = "white"),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black"),
+          axis.ticks.y = element_line(color = "black"),
+          axis.ticks.x = element_line(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.text.x = element_text(color = "black"),
+          panel.border = element_blank(), 
+          legend.position = "none")
+  print(p)
+  dev.off()
+  # Perform the Wilcoxon test and print the result
+  print(wilcox.test(all_info$test_gene_value[all_info$B_score == 1], all_info$test_gene_value[all_info$B_score == 0])) 
+}
+
+```
