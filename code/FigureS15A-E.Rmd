@@ -127,7 +127,7 @@ cytosig_info$SampleID = rownames(cytosig_info)
 
 
 
-# Figure S13A-D. correlation plot between Bratio and signatures
+# Figure S15A-D. correlation plot between Bratio and signatures
 ```{r}
 
 colnames(signature_phenotype_TCGA_df)
@@ -176,7 +176,7 @@ dev.off()
 
 ```
 
-# Figure S13E. heatmap of CXCL9, IFNG, and GM-CSF cytosig vs B cell abundance among HPVp, HPVn, and merged patients
+# Figure S15E. heatmap of CXCL9, IFNG, and GM-CSF cytosig vs B cell abundance among HPVp, HPVn, and merged patients
 ```{r}
 
 test_genes = c("IFNG", "CXCL9")

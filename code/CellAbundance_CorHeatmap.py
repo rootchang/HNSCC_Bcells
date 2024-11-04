@@ -1,6 +1,6 @@
 ###############################################################################################
 #Aim: Correlation between abundance of cells
-#Description: To make heatmap showing correlation between abundance of cells (Figure S13F).
+#Description: To make heatmap showing correlation between abundance of cells (Figure S15F).
 # Note that MCPcounter was used here due to its ability to estimate abundance of dendritic cells
 #Run command: python CellAbundance_CorHeatmap.py
 ###############################################################################################

@@ -370,7 +370,7 @@ write.csv(result_df, "../02.Input/HNSCC-Amanda/AUC_ICB_B_cell_subgroups.csv")
 
 ```
 
-#  Figure S7A. AUCs boxplot comparing B cells and different B subgroups
+#  Figure S9A. AUCs boxplot comparing B cells and different B subgroups
 ```{r}
 
 

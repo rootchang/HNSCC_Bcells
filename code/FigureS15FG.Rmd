@@ -96,7 +96,7 @@ Morris_all_info$ICBR[Morris_all_info$BEST_RESPONSE %in% c("CR", "PR")] = 1
 
 ```
 
-# Figure S13F. Cell abundance correlation heatmap (Note that MCPcounter was used here due to its ability to estimate abundance of dendritic cells)
+# Figure S15F. Cell abundance correlation heatmap (Note that MCPcounter was used here due to its ability to estimate abundance of dendritic cells)
 ```{r}
 
 tumor_ICF_df = Morris_all_info 
@@ -114,7 +114,7 @@ write.csv(tumor_ICF_df, file = "../02.Input/MSK/Morris_cell_abundance_MCPcounter
 ```
 
 
-# Figure S13G. comparison of gene IFNG and CXCL9, and GMCSF cytosig score in B-high vs B-low tumors
+# Figure S15G. comparison of gene IFNG and CXCL9, and GMCSF cytosig score in B-high vs B-low tumors
 ```{r}
 
 Morris_Bratio_df = Morris_Kassandra_cellRatio_df[c("ID", "B_cells")]
@@ -195,7 +195,7 @@ for (test_gene in test_cytosig_vec) {
 ```
 
 
-# Figure S13G. comparison of MHCII, cross-presentation, and Hypoxia ssgsea scores in B-high vs B-low tumors
+# Figure S15G. comparison of MHCII, cross-presentation, and Hypoxia ssgsea scores in B-high vs B-low tumors
 ```{r}
 
 # signatures

@@ -88,7 +88,7 @@ GSE200996_PBMC_ICF_df$MonoMac = rowSums(GSE200996_PBMC_ICF_df[intersect(MonoMac_
 
 ```
 
-# Figure S5: correlation of cell ratio between PBMC and tumor (GSE139324, GSE200996)
+# Figure S6: correlation of cell ratio between PBMC and tumor (GSE139324, GSE200996)
 ```{r}
 
 cell_type_test = "NK" # c("Bcells", "Tcells", "CD8T", "Thelp", "Tregs", "DC", "MonoMac", "NK")

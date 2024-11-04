@@ -98,7 +98,7 @@ GSE234933_Bratio_Cytosig_cor_df[1:50,]
 
 ```
 
-# Figure S10F. Dotplot (Cohort6)
+# Figure S12F. Dotplot (Cohort6)
 ```{r}
 
 Bratio_Cytosig_cor_df = GSE234933_Bratio_Cytosig_cor_df

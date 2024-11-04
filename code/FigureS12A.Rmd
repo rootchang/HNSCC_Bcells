@@ -81,7 +81,7 @@ GSE234933_tumor_ICF_df0 = GSE234933_tumor_ICF_df
 
 ```
 
-# Figure S10A. correlation network between abundance of different cells in tumor (GSE234933)
+# Figure S12A. correlation network between abundance of different cells in tumor (GSE234933)
 ```{r}
 
 library(igraph) 

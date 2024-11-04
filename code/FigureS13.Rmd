@@ -79,7 +79,7 @@ merged_seu_GSE234933 = subset_seu_GSE234933
 ```
 
 
-# Figure S11. boxplot of expression of key genes in Mac, B, and CD8T cells (Bhigh vs Blow)
+# Figure S13. boxplot of expression of key genes in Mac, B, and CD8T cells (Bhigh vs Blow)
 ```{r}
 
 test_celltype = "Macrophages" # T_cells Macrophages B_cells

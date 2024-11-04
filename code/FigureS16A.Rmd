@@ -68,7 +68,7 @@ HPVneg_samples = clinicInfo_TCGA_HNSC$SampleID[clinicInfo_TCGA_HNSC$Subtype == "
 
 ```
 
-# Figure S14A. barplot of correlations
+# Figure S16A. barplot of correlations
 ```{r}
 
 HPV = "pos" # pos neg 

@@ -57,7 +57,7 @@ result_fig_dir = "../03.Results/Figures/"
 
 ```
 
-# Figure S6A. analysis in Cohort7
+# Figure S8A. analysis in Cohort7
 ```{r}
 
 response_type = "RECIST_R"  # Patho_minR RECIST_R
@@ -130,7 +130,7 @@ dev.off()
 ```
 
 
-# Figure S6B. analysis in Cohort11
+# Figure S8B. analysis in Cohort11
 ```{r}
 
 tissue_type = "B_cells_tumor"  # B_cells_stroma B_cells_tumor

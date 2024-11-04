@@ -126,7 +126,7 @@ for (ct in cell_types_all){
 
 ```
 
-# Fig. S10B. DEG volcano plot
+# Fig. S12B. DEG volcano plot
 ```{r}
 
 Cells.markers_test = Cells.markers_Bhigh_vs_Blow_GSE234933[["Dendritic_cells"]]
@@ -239,7 +239,7 @@ GSE234933_Blow_pathway_list_reactome = GSE234933_Blow_pathway_list
 ```
 
 
-# Fig. S10C. pathway enrichment plot
+# Fig. S12C. pathway enrichment plot
 ```{r}
 
 test_cell_type = "Dendritic_cells" 

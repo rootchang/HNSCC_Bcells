@@ -58,7 +58,7 @@ cell_ratios_df_HPVunk = cell_ratios_df[grepl("-01", cell_ratios_df$SampleID) & i
 
 ```
 
-# Figure S12. correlation network between abundance of different cells in tumor (Note that MCPcounter was used here due to its ability to estimate abundance of dendritic cells)
+# Figure S14. correlation network between abundance of different cells in tumor (Note that MCPcounter was used here due to its ability to estimate abundance of dendritic cells)
 ```{r}
 
 library(igraph) 

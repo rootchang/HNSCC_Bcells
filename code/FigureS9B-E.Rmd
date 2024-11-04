@@ -76,7 +76,7 @@ prob_positive_class <- function(features, coef, intercept) {
 
 ```
 
-# Figure S7B. compare NLR, albumin and B cell ratio AUC on Cohort11
+# Figure S9B. compare NLR, albumin and B cell ratio AUC on Cohort11
 ```{r}
 
 data_dir = "../02.Input/HNSCC-Amanda/"
@@ -159,7 +159,7 @@ dev.off()
 
 ```
 
-# Figure S7C. compare NLR and albumin AUC on Cohort9
+# Figure S9C. compare NLR and albumin AUC on Cohort9
 ```{r}
 
 MSK_data_raw = read.xlsx("../02.Input/MSKCC_HNC/MSK_full.xlsx", sheet = "Sheet1", rowNames = T)
@@ -217,7 +217,7 @@ dev.off()
 
 ```
 
-# Figure S7D. AUCs of individual variables and integrative models (Cohort5)
+# Figure S9D. AUCs of individual variables and integrative models (Cohort5)
 ```{r}
 
 ####################################  scRNAseq #################################### 
@@ -349,7 +349,7 @@ dev.off()
 
 ```
 
-# Figure S7E. AUCs of individual variables and integrative models (Cohort11)
+# Figure S9E. AUCs of individual variables and integrative models (Cohort11)
 ```{r}
 
 data_dir = "../02.Input/HNSCC-Amanda/"

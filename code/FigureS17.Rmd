@@ -124,7 +124,7 @@ Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data
 
 ```
 
-# Figure S15A. Cohort4 (NCT02296684) compare Bhigh-NR vs Bhigh-R
+# Figure S17A. Cohort4 (NCT02296684) compare Bhigh-NR vs Bhigh-R
 ```{r}
 
 # phenotype info: 
@@ -247,7 +247,7 @@ Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data
 ```
 
 
-# Figure S15B. Cohort5 (scRNAseq) compare Bhigh-NR vs Bhigh-R
+# Figure S17B. Cohort5 (scRNAseq) compare Bhigh-NR vs Bhigh-R
 ```{r}
 
 # phenotype info: 
@@ -376,7 +376,7 @@ Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data
 ```
 
 
-# Figure S15C. Cohort7 (PBMC) compare Bhigh-NR vs Bhigh-R
+# Figure S17C. Cohort7 (PBMC) compare Bhigh-NR vs Bhigh-R
 ```{r}
 
 # phenotype info: 
@@ -503,7 +503,7 @@ Bhigh_R_samples = plot_data$SampleID[(plot_data$`B cells` > cutoff) & (plot_data
 
 ```
 
-# Figure S15D. Cohort10 compare Bhigh-NR vs Bhigh-R
+# Figure S17D. Cohort10 compare Bhigh-NR vs Bhigh-R
 ```{r}
 
 # phenotype info: 

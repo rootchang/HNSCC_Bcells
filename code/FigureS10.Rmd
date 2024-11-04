@@ -280,7 +280,7 @@ result_IGHM_df <- result_IGHM_df[order(result_IGHM_df$HR_OS), ]
 ```
 
 
-# Figure S8AB. forest plot of MHRs for Bratio and IGHM
+# Figure S10AB. forest plot of MHRs for Bratio and IGHM
 ```{r}
 
 # remove blood cancers

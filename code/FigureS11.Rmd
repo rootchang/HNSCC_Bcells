@@ -83,7 +83,7 @@ Cells.markers_GSE200996_Tissue <- FindMarkers(subset_seu_GSE200996_Tissue_B, ide
 
 ```
 
-# Figure S9A. Find and plot DEGs in B-high vs B-low B cells (GSE200996 PBMC)
+# Figure S11A. Find and plot DEGs in B-high vs B-low B cells (GSE200996 PBMC)
 ```{r}
 
 merged_seu_GSE200996_PBMC = readRDS(file = paste0("../02.Input/GSE200996/seu_PBMC.rds"))
@@ -209,7 +209,7 @@ Cells.markers_GSE139324_Tissue <- FindMarkers(subset_seu_GSE139324_Tissue_B, ide
 ```
 
 
-# Figure S9B. Make venn plot showing intersection of upregulated genes in B cells in GSE200996 and GSE139324
+# Figure S11B. Make venn plot showing intersection of upregulated genes in B cells in GSE200996 and GSE139324
 ```{r}
 
 library(VennDiagram)

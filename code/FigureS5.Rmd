@@ -125,7 +125,7 @@ geneExpr_phenotype_TCGA_df = cbind(geneExpr_df2, clinical_info_all)
 ```
 
 
-# Fig. S4A. boxplot of Sex
+# Fig. S5A. boxplot of Sex
 ```{r}
 
 all_info = na.omit(geneExpr_phenotype_TCGA_df[c("B_cells", "Sex")])
@@ -160,7 +160,7 @@ dev.off()
 
 ```
 
-# Fig. S4A. boxplot of Age
+# Fig. S5A. boxplot of Age
 ```{r}
 
 all_info = na.omit(geneExpr_phenotype_TCGA_df[c("B_cells", "Age")])
@@ -195,7 +195,7 @@ dev.off()
 
 ```
 
-# Fig. S4A. boxplot of stage
+# Fig. S5A. boxplot of stage
 ```{r}
 
 all_info = na.omit(geneExpr_phenotype_TCGA_df[c("B_cells", "Stage")])
@@ -230,7 +230,7 @@ dev.off()
 
 ```
 
-# Fig. S4A. boxplot of HPV
+# Fig. S5A. boxplot of HPV
 ```{r}
 
 all_info = geneExpr_phenotype_TCGA_df[c("B_cells", "HPV")]
@@ -269,7 +269,7 @@ dev.off()
 
 ```
 
-# Fig. S4B. forest plot of B with clinical vars (HPV, age, sex, stage)
+# Fig. S5B. forest plot of B with clinical vars (HPV, age, sex, stage)
 ```{r}
 
 Outcome_all = c("OS_time", "OS_event", "PFS_time", "PFS_event")
@@ -449,7 +449,7 @@ dev.off()
 
 ```
 
-# Fig. S4C. K-M OS curves for four groups (Bratio and HPV)
+# Fig. S5C. K-M OS curves for four groups (Bratio and HPV)
 ```{r}
 
 info_df = geneExpr_phenotype_TCGA_df[c("B_cells", "HPV","OS_event", "OS_time", "PFS_event", "PFS_time")]
@@ -546,7 +546,7 @@ print(paste(c(P_value,HR_value), collapse= " "))
 ```
 
 
-# Fig. S4D. barplot of SCC correlation and p values between Bratio and TLS_sig/CD8A/IFNG_sig/CXCL9_SPP1/Tcells...
+# Fig. S5D. barplot of SCC correlation and p values between Bratio and TLS_sig/CD8A/IFNG_sig/CXCL9_SPP1/Tcells...
 ```{r}
 
 vars_for_test = c("SNV.Neoantigens", "Indel.Neoantigens", "Neoantigens", "TMB", "MSIscore", "FCNA", "AS", "TLS_sig", "IFNG_sig", "Mac_sig", "T_cells", "CD8A", "CXCL9", "PTGS2") 
@@ -601,7 +601,7 @@ dev.off()
 ```
 
 
-# Fig. S4E. forest plot for TLS_sig/CD8A/IFNG_sig/CXCL9_SPP1/Tcells MHRs controlling (HPV, age, sex, stage)
+# Fig. S5E. forest plot for TLS_sig/CD8A/IFNG_sig/CXCL9_SPP1/Tcells MHRs controlling (HPV, age, sex, stage)
 ```{r}
 
 cellType_all = vars_for_test

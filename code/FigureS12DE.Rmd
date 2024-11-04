@@ -158,7 +158,7 @@ save(DEGs_Bhigh_GSE234933, file = paste0(processed_dir,"DEGs_Bhigh_GSE234933_4.R
 
 
 
-# Figure S10D. extract all MSigDB pathways 
+# Figure S12D. extract all MSigDB pathways 
 ```{r}
 
 library(msigdbr)
@@ -371,7 +371,7 @@ dev.off()
 ```
 
 
-# Figure S10E. extract common Reactome pathways 
+# Figure S12E. extract common Reactome pathways 
 ```{r}
 
 fig_dir = "../03.Results/Figures/"
